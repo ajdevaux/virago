@@ -88,7 +88,7 @@ def IRISpgm_scanner(mirror_file, scan_list, image_detail_toggle):
     if not os.path.exists('../virago_output/'+ chip_name): os.makedirs('../virago_output/' + chip_name)
 
     try: mirror = io.imread(mirror_file)
-    except FileNotFoundError: mirror_toggle = False; print("\nMirror file absent\n")
+    except FileNotFoundError: mirror_toggle = False; print("Mirror file absent")
     else: mirror_toggle = True; print("\nMirror file detected\n")
 
     fluor_files = [file for file in scan_list if file.endswith('A.pgm' or 'B.pgm' or 'C.pgm')]
@@ -229,9 +229,9 @@ def IRISpgm_scanner(mirror_file, scan_list, image_detail_toggle):
 
             particles = d_blobs[(d_blobs[:,4] < sdm_filter) & (d_blobs[:,3] > 0)]
             if len(particles) == 0: particles = [[0,0,0,0,0,0]]
-            print("\nImage scanned: " + str(pgmfile))
+            print("Image scanned: " + str(pgmfile) + "\n")
             particle_array = np.concatenate((particle_array, particles))
-            print("Particles in image: " + str(len(particles)) + "\n")
+            print(len(particles))
             return particle_array
 
         total_particles = particle_quant(pic, vis_blobs, total_particles, zslice, sdm_filter)
@@ -269,9 +269,10 @@ def IRISpgm_scanner(mirror_file, scan_list, image_detail_toggle):
     total_part_df = dupe_finder(total_part_df)
     total_part_df = dupe_dropper(total_part_df, rounding_cols, sorting_col = 'pc')
 
-
+    total_part_df.to_csv('../virago_output/' + chip_name + '/' + png + '.'
+                         + str(area_squm) + '.vcount.csv', sep = ",")
     particle_count = len(total_part_df)
-    print("Unique particles counted: " + str(particle_count) +"\n")
+    print("Particles counted: " + str(particle_count) +"\n")
 
 #---------------------------------------------------------------------------------------------#
 #### Fluorescent File Processer
@@ -393,9 +394,7 @@ def IRISpgm_scanner(mirror_file, scan_list, image_detail_toggle):
     plt.yticks(size = 10, color = 'k')
     plt.ylabel("Particle Count", color = 'k')
 
-    if not os.path.exists('../virago_output/'+ chip_name + '/processed_images'):
-        os.makedirs('../virago_output/' + chip_name + '/processed_images')
-    plt.savefig('../virago_output/' + chip_name + '/processed_images/' + png +'.png', dpi = dpi)
+    plt.savefig('../virago_output/' + chip_name + '/' + png +'.png', dpi = dpi)
     print("Processed image generated: " + png + ".png")
     plt.show()
     plt.close()
@@ -415,94 +414,89 @@ def IRISpgm_scanner(mirror_file, scan_list, image_detail_toggle):
     #vis_fluor_df = pd.concat([total_part_df, fluor_part_df])
     #vis_fluor_df = dupe_finder(vis_fluor_df)
     #print(vis_fluor_df)
-    if fluor_files:
-        fluor_part_df = dupe_finder(fluor_part_df)
-        #rounding_cols = ['yx_5','yx_10','yx_10/5','yx_5/10','yx_ceil','yx_floor']
-        merge_df = pd.DataFrame()
-        merging_cols_drop = ['yx_5_x','yx_10_x','yx_10/5_x','yx_5/10_x','yx_ceil_x','yx_floor_x',
-                        'yx_5_y','yx_10_y','yx_10/5_y','yx_5/10_y','yx_ceil_y','yx_floor_y']
-        merging_cols_keep = ['y_x', 'x_x', 'r_x', 'pc_x']
-        for column in rounding_cols:
-            merge_df2 = pd.merge(total_part_df, fluor_part_df, how = 'inner', on = [column])
-            #merge_df2.drop(merging_cols_drop, axis = 1, inplace = True)
-            print(merge_df2)
-            merge_df.append(merge_df2, ignore_index = True)
-        print(merge_df)
-        if not merge_df.empty:
+    fluor_part_df = dupe_finder(fluor_part_df)
+    #rounding_cols = ['yx_5','yx_10','yx_10/5','yx_5/10','yx_ceil','yx_floor']
+    merge_df = pd.DataFrame()
+    merging_cols_drop = ['yx_5_x','yx_10_x','yx_10/5_x','yx_5/10_x','yx_ceil_x','yx_floor_x',
+                    'yx_5_y','yx_10_y','yx_10/5_y','yx_5/10_y','yx_ceil_y','yx_floor_y']
+    merging_cols_keep = ['y_x', 'x_x', 'r_x', 'pc_x']
+    for column in rounding_cols:
+        merge_df2 = pd.merge(total_part_df, fluor_part_df, how = 'inner', on = [column])
+        merge_df2.drop(merging_cols_drop, axis = 1, inplace = True)
+        print(merge_df2)
+        merge_df.append(merge_df2, columns = column, ignore_index = True)
+    print(merge_df)
+    if not merge_df.empty:
 
-            merge_df = dupe_dropper(merge_df, merging_cols, sorting_col = 'pc_x')
-            merge_df.drop(rounding_cols, axis = 1, inplace = True)
-            merge_df.drop(merging_cols, axis = 1, inplace = True)
-            print(merge_df)
-            print(len(merge_df))
-        # merge_df.drop(['yx_5','yx_10/5','yx_5/10','yx_ceil','yx_floor'],
-        #                     axis = 1, inplace = True)
-        # merge_df.fillna(0, inplace=True)
-        #
-        # nonmatches = (merge_df.pc_y == 0).sum()
-        # print(nonmatches / len())
-            fig = plt.figure(figsize = figsize, dpi = dpi)
-            subplot = fig.add_subplot(111)
-            subplot.scatter(merge_df.pc_x,merge_df.pc_y, c='g', marker = '+', alpha = 0.5)
-            subplot.set_xlabel("Visible Percent Contrast", color = 'gray')
-            subplot.set_ylabel("Fluorescent Percent Contrast", color = 'gray')
-            plt.title = (png + ": Correlation of Visible Particle Size with Fluorescent Signal")
-            plt.show()
-            plt.close()
+        merge_df = dupe_dropper(merge_df, merging_cols, sorting_col = 'pc_x')
+        merge_df.drop(rounding_cols, axis = 1, inplace = True)
+        merge_df.drop(merging_cols, axis = 1, inplace = True)
+        print(merge_df)
+        print(len(merge_df))
+    # merge_df.drop(['yx_5','yx_10/5','yx_5/10','yx_ceil','yx_floor'],
+    #                     axis = 1, inplace = True)
+    # merge_df.fillna(0, inplace=True)
+    #
+    # nonmatches = (merge_df.pc_y == 0).sum()
+    # print(nonmatches / len())
+        fig = plt.figure(figsize = figsize, dpi = dpi)
+        subplot = fig.add_subplot(111)
+        subplot.scatter(merge_df.pc_x,merge_df.pc_y, c='g', marker = '+', alpha = 0.5)
+        subplot.set_xlabel("Visible Percent Contrast", color = 'gray')
+        subplot.set_ylabel("Fluorescent Percent Contrast", color = 'gray')
+        plt.title = (png + ": Correlation of Visible Particle Size with Fluorescent Signal")
+        plt.show()
+        plt.close()
 
 
 
     total_part_df.drop(rounding_cols, axis = 1, inplace = True)
-    if not os.path.exists('../virago_output/'+ chip_name + '/vcounts'):
-        os.makedirs('../virago_output/' + chip_name + '/vcounts')
-    total_part_df.to_csv('../virago_output/' + chip_name + '/vcounts/' + png + '.'
-                         + str(area_squm) + '.vcount.csv', sep = ",")
 #---------------------------------------------------------------------------------------------#
     return particle_count, total_part_df, area_sqmm
 #*********************************************************************************************#
-def nano_csv_reader(chip_name, spot_data, csv_list):
-    min_corr = input("\nWhat is the correlation cutoff for particle count?"+
-                     " (choose value between 0.5 and 1)\t")
-    if min_corr == "": min_corr = 0.75
-    min_corr = float(min_corr)
-    contrast_window = input("\nEnter the minimum and maximum percent contrast values," +
-                            " separated by a comma (for VSV, 0-6% works well)\t")
-    assert isinstance(contrast_window, str)
-    contrast_window = contrast_window.split(",")
-    cont_0 = (float(contrast_window[0])/100)+1
-    cont_1 = (float(contrast_window[1])/100)+1
-    min_corr_str = str("%.2F" % min_corr)
-    particles_list = ([])
-    particle_dict = {}
-    nano_csv_list = [csvfile for csvfile in csv_list if csvfile.split(".")[-2].isdigit()]
-    for csvfile in nano_csv_list: ##This pulls particle data from the CSVs generated by nanoViewer
-        csv_data = pd.read_table(
-                             csvfile, sep = ',',
-                             error_bad_lines = False, usecols = [1,2,3,4,5],
-                             names = ("contrast", "correlation", "x", "y", "slice")
-                             )
-        filtered = csv_data[(csv_data['contrast'] <= cont_1)
-                    & (csv_data['contrast'] > cont_0)
-                    & (csv_data['correlation'] >= min_corr)][['contrast','correlation']]
-        particles = len(filtered)
-        csv_id = csvfile.split(".")[1] + "." + csvfile.split(".")[2]
-        particle_dict[csv_id] = list(round((filtered.contrast - 1) * 100, 4))
-        particles_list.append(particles)
-        print('File scanned: '+ csvfile + '; Particles counted: ' + str(particles))
-        particle_count_col = str('particle_count_'+ min_corr_str
-                           + '_' + contrast_window[0]
-                           + '_' + contrast_window[1]+ '_')
-    spot_data[particle_count_col] = particles_list
-    for row in spot_data.iterrows():
-        filtered_density = spot_data[particle_count_col] / spot_data.area / 1000
-    spot_data = pd.concat([spot_data, filtered_density.rename('kparticle_density')], axis = 1)
-    dict_file = pd.io.json.dumps(particle_dict)
-    f = open('../virago_output/' + chip_name + '/' + chip_name + '_particle_dict_' + min_corr_str + 'corr.txt', 'w')
-    f.write(dict_file)
-    f.close()
-    print("Particle dictionary file generated")
-
-    return min_corr, spot_data, particle_dict, contrast_window
+# def nano_csv_reader(chip_name, spot_data, csv_list):
+#     min_corr = input("\nWhat is the correlation cutoff for particle count?"+
+#                      " (choose value between 0.5 and 1)\t")
+#     if min_corr == "": min_corr = 0.75
+#     min_corr = float(min_corr)
+#     contrast_window = input("\nEnter the minimum and maximum percent contrast values," +
+#                             " separated by a comma (for VSV, 0-6% works well)\t")
+#     assert isinstance(contrast_window, str)
+#     contrast_window = contrast_window.split(",")
+#     cont_0 = (float(contrast_window[0])/100)+1
+#     cont_1 = (float(contrast_window[1])/100)+1
+#     min_corr_str = str("%.2F" % min_corr)
+#     particles_list = ([])
+#     particle_dict = {}
+#     nano_csv_list = [csvfile for csvfile in csv_list if csvfile.split(".")[-2].isdigit()]
+#     for csvfile in nano_csv_list: ##This pulls particle data from the CSVs generated by nanoViewer
+#         csv_data = pd.read_table(
+#                              csvfile, sep = ',',
+#                              error_bad_lines = False, usecols = [1,2,3,4,5],
+#                              names = ("contrast", "correlation", "x", "y", "slice")
+#                              )
+#         filtered = csv_data[(csv_data['contrast'] <= cont_1)
+#                     & (csv_data['contrast'] > cont_0)
+#                     & (csv_data['correlation'] >= min_corr)][['contrast','correlation']]
+#         particles = len(filtered)
+#         csv_id = csvfile.split(".")[1] + "." + csvfile.split(".")[2]
+#         particle_dict[csv_id] = list(round((filtered.contrast - 1) * 100, 4))
+#         particles_list.append(particles)
+#         print('File scanned: '+ csvfile + '; Particles counted: ' + str(particles))
+#         particle_count_col = str('particle_count_'+ min_corr_str
+#                            + '_' + contrast_window[0]
+#                            + '_' + contrast_window[1]+ '_')
+#     spot_data[particle_count_col] = particles_list
+#     for row in spot_data.iterrows():
+#         filtered_density = spot_data[particle_count_col] / spot_data.area / 1000
+#     spot_data = pd.concat([spot_data, filtered_density.rename('kparticle_density')], axis = 1)
+#     dict_file = pd.io.json.dumps(particle_dict)
+#     f = open('../virago_output/' + chip_name + '/' + chip_name + '_particle_dict_' + min_corr_str + 'corr.txt', 'w')
+#     f.write(dict_file)
+#     f.close()
+#     print("Particle dictionary file generated")
+#
+#     return min_corr, spot_data, particle_dict, contrast_window
 #*********************************************************************************************#
 #*********************************************************************************************#
 def virago_csv_reader(chip_name, vir_csv_list):
@@ -523,16 +517,18 @@ def virago_csv_reader(chip_name, vir_csv_list):
 
         particle_count = len(kept_particles)
 
-        csv_id = str(csv_info[1])+"."+str(csv_info[2])
+        csv_id = str(csv_info[3])+"."+str(csv_info[4])
         particle_dict[csv_id] = kept_particles
         particles_list.append(particle_count)
         print('File scanned:  '+ csvfile + '; Particles counted: ' + str(particle_count))
     dict_file = pd.io.json.dumps(particle_dict)
-    #os.chdir('../virago_output/' + chip_name + '/')
-    f = open(chip_name + '_particle_dict_vir.txt', 'w')
+    f = open('../virago_output/' + chip_name + '/' + chip_name + '_particle_dict_vir.txt', 'w')
     f.write(dict_file)
     f.close()
     print("Particle dictionary file generated")
+
+
+
 
     return particles_list, contrast_window, particle_dict
 #*********************************************************************************************#
@@ -658,8 +654,7 @@ intro = chip_file[0]
 jargon_dict = {
                '13F6': 'anti-EBOVmay', '127-8': 'anti-MARV',
                '6D8': 'anti-EBOVmak', '8.9F': 'anti-LASV',
-               '8G5':'anti-VSV', '4F3': 'anti-panEBOV',
-               '13C6':'anti-panEBOV'
+               '8G5':'anti-VSV', '4F3': 'anti-panEBOV'
                }
 q = 0
 spot_dict = {} ##Matches spot antibody type to scan order (spot number)
@@ -748,7 +743,7 @@ for val in spot_dict.values():
 
 #*********************************************************************************************#
 # PGM Scanning
-spot = 1 ##Change this.......... to only scan certain spots
+spot,scan = 1,1 ##Change this.......... to only scan certain spots
 #*********************************************************************************************#
 
 if pgm_list:
@@ -763,15 +758,67 @@ if pgm_list:
             pass_per_spot_list = sorted([file for file in pgm_set if int(file.split(".")[1]) == spot])
             passes_per_spot = len(pass_per_spot_list)
 
+            #     scan_list = [file for file in pgm_list if file.startswith(pass_per_spot_list[scan - 1])]
+            #     particle_count, total_part_df, area_sqmm = IRISpgm_scanner(mirror_file, scan_list, image_detail_toggle)
+            # else:
             scan_range = range(0,passes_per_spot,1)
             for x in scan_range:
                 scan_list = [file for file in pgm_list if file.startswith(pass_per_spot_list[x])]
                 particle_count, total_part_df, area_sqmm = IRISpgm_scanner(mirror_file, scan_list, image_detail_toggle)
             if passes_per_spot != pass_counter: print("Missing pgm files... ")
             spot += 1
+            #scan += 1
+            # if scan > pass_counter:
+            #     scan = 1
+            #     spot += 1
 
         print(datetime.now() - startTime)
+        # scan_list = []
+        # #spot_data_vir = []
+        # while spot <= (spot_counter - 0):
+        #     for pgmfile in pgm_list:
+        #         pgm_name = pgmfile.split(".")
+        #         scan_no = int(pgm_name[2])
+        #         spot_no = int(pgm_name[1])
+        #         png = '.'.join(pgm_name[:3])
+        #         if (spot_no == spot) & (scan_no == scan): scan_list.append(pgmfile)
+        #         if not scan_list:
+        #             print("Missing pgm files... moving to next set")
+        #             scan += 1
+        #             if scan > pass_counter:
+        #                 scan = 1
+        #                 spot += 1
+        #         if len(scan_list) == zslice_count:
+        #             startTime2 = datetime.now()
+        #             particle_count, total_part_df, area_sqmm = IRISpgm_scanner(mirror_file, scan_list, image_detail_toggle)
+        #
+        #
+        #             scan_data = [spot_no, scan_no, round(area_sqmm,6), particle_count]
+        #             spot_data_vir.append(scan_data)
+        #             print(datetime.now() - startTime2)
+        #             scan_list = []
+        #             scan += 1
+        #             if scan > pass_counter:
+        #                 scan = 1
+        #                 spot += 1
 
+
+        # spot_data_vir = pd.DataFrame(spot_data_vir, columns = ('spot_number', 'scan_number',
+        #                                                        'area_sqmm',
+        #                                                        'particle_count_0_0_0_'))
+        # spot_data_vir.insert(2, 'scan_time', full_times)
+        # spot_data_vir.insert(2, 'spot_type', spot_labels2)
+        # for row in spot_data_vir.iterrows():
+        #     kparticle_density = (spot_data_vir.loc[:,'particle_count_0_0_0_']
+        #                         / spot_data_vir.loc[:,'area_sqmm']) / 1000
+        # spot_data_vir['kparticle_density'] = kparticle_density
+        # normalized_density_vir = density_normalizer(spot_data_vir, pass_counter, spot_list)
+        # spot_data_vir['normalized_density'] = normalized_density_vir
+        # spot_data_vir.to_csv('../virago_output/' + chip_name + '/'
+        #                      + chip_name + "_spot_data_vir.csv", sep = ",")
+        # print(spot_data_vir)
+    # else:
+    #     spot_data_vir = pd.DataFrame([])
 #*********************************************************************************************#
 # CSV Reader
 #*********************************************************************************************#
@@ -827,7 +874,7 @@ if len(vir_csv_list) == (len(pgm_list) / zslice_count):
 
         particle_count_vir, contrast_window, particle_dict = virago_csv_reader(chip_name, vir_csv_list)
 
-        area_list = np.array([(float(csvfile.split(".")[-3]) / 1e6) for csvfile in vir_csv_list])
+        area_list = np.array([(float(csvfile.split(".")[5]) / 1e6) for csvfile in vir_csv_list])
         spot_data_vir['area_sqmm'] = area_list
 
         particle_count_col = str('particle_count_0'
@@ -837,7 +884,7 @@ if len(vir_csv_list) == (len(pgm_list) / zslice_count):
 
         kparticle_density = np.round(np.array(particle_count_vir) / area_list * 0.001,3)
         spot_data_vir['kparticle_density'] = kparticle_density
-
+        print(spot_data_vir)
 
 os.chdir(iris_path.strip('"'))
 
@@ -874,7 +921,7 @@ hist_norm_toggle = input("Do you want to normalize the counts to a percentage? (
 if hist_norm_toggle.lower() in ('y','yes'): hist_norm = True
 spots_to_hist = spots_to_hist.split(",")
 print(spots_to_hist)
-#cont_0 = float(contrast_window[0])
+cont_0 = float(contrast_window[0])
 cont_1 = float(contrast_window[1])
 for spot in spots_to_hist:
     hist_dict = {}
@@ -919,34 +966,17 @@ for spot in spots_to_hist:
     print('File generated: ' +  chip_name + '_spot-' + spot + '_histo.png')
     plt.close()
 
-
-#*********************************************************************************************#
+# -------------------------------------------------------------------
+#####################################################################
 # Particle count normalizer so pass 1 = 0 particle density
-#*********************************************************************************************#
+#####################################################################
+#--------------------------------------------------------------------
 
 normalized_density = density_normalizer(spot_data, pass_counter, spot_list)
 len_diff = len(spot_data) - len(normalized_density)
 if len_diff != 0:
     normalized_density = np.append(np.asarray(normalized_density),np.full(len_diff, np.nan))
 spot_data['normalized_density'] = normalized_density
-print(spot_data)
-#*********************************************************************************************#
-def spot_remover(spot_data):
-    excise_toggle = input("Would you like to remove any spots from the dataset? (y/(n))\t")
-    assert isinstance(excise_toggle, str)
-    if exise_toggle.lower() in ('y','yes'):
-        spots_to_excise = input("Which spots? (Separate all spot numbers by a comma)\t")
-        spots_to_excise = spots_to_excise.split(",")
-
-
-
-
-
-
-
-
-
-
 
 # -------------------------------------------------------------------
 #####################################################################
@@ -1077,30 +1107,31 @@ for spot in spot_set:
 
     diff_avg.append(np.mean(avg_data.difference))
     diff_std.append(np.std(avg_data.difference))
-fig,axes = plt.subplots(nrows = 1, ncols = 1, figsize = (5,4), sharey = True)
+fig,axes = plt.subplots(nrows = 1, ncols = 2, figsize = (9,4), sharey = True)
 fig.subplots_adjust(left=0.08, right=0.98, wspace=0)
-plt.suptitle("Experiment "+ chip_name + "- Final Scan difference versus Inital Scan\n"
-             + "Sample Conditions: " + sample_name, size = 12)
-#
-# bar1 = axes[0].bar(np.arange(len(spot_set)), baseline_avg, width = 0.45, color = colormap[0],
-#                    tick_label = spot_set, yerr = baseline_std,capsize = 4, alpha = 0.75)
-#
-# bar2 = axes[0].bar(np.arange(len(spot_set)) + 0.45, post_scan_avg, width = 0.45,
-#                    color = colormap[1], tick_label = spot_set, yerr = post_scan_std,
-#                    capsize = 4, alpha = 0.75)
+plt.suptitle(chip_name + " - Initial and Final Scans\n" + "Sample Conditions: " + sample_name)
 
-axes.set_ylabel('Particle Density (kparticles/sq. mm)\n' + contrast_window[0]
+bar1 = axes[0].bar(np.arange(len(spot_set)), baseline_avg, width = 0.45, color = colormap[0],
+                   tick_label = spot_set, yerr = baseline_std,capsize = 4, alpha = 0.75)
+
+bar2 = axes[0].bar(np.arange(len(spot_set)) + 0.45, post_scan_avg, width = 0.45,
+                   color = colormap[1], tick_label = spot_set, yerr = post_scan_std,
+                   capsize = 4, alpha = 0.75)
+
+axes[0].set_ylabel('Particle Density (kparticles/sq. mm)\n' + contrast_window[0]
             +'-'+contrast_window[1] + '% Contrast, Correlation Value >='
-            + min_corr_str, color = 'k', size = 8)
-bar3 = axes.bar(np.arange(len(spot_set)) + (0.45/2), diff_avg, width = 0.5,
+            + min_corr_str, color = 'k', size = 10)
+bar3 = axes[1].bar(np.arange(len(spot_set)) + (0.45/2), diff_avg, width = 0.5,
                    color = colormap[3],tick_label = spot_set, yerr = diff_std, capsize = 4)
 #plt.xticks(np.arange(len(spot_set)) + (0.45/2), spot_set, rotation = 45, size = 6)
-# for ax in axes:
-axes.yaxis.grid(True)
-axes.set_xticklabels(spot_set, rotation = 45, size = 6)
-axes.set_xlabel("Antibody", color = 'k', size = 8)
+for ax in axes:
+    ax.yaxis.grid(True)
+    ax.set_xticklabels(spot_set, rotation = 45, size = 6)
+    ax.set_xlabel("Antibody", color = 'k', size = 10)
 
-#plt.figlegend((bar3),'Final Scan Difference',loc = 'upper right', fontsize = 10)
+plt.figlegend((bar1,bar2,bar3),
+              ('Initial Scan', 'Final Scan', 'Difference'),
+              loc = 'upper right', fontsize = 10)
 barplot_name = (chip_name + '_' + contrast_window[0] + '-' + contrast_window[1]
                 + '_'+  min_corr_str + '_barplot.png')
 plt.savefig('../virago_output/' + chip_name + '/' + barplot_name,
