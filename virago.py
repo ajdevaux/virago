@@ -68,7 +68,7 @@ def image_details(fig1, fig2, fig3, pic_edge, dpi):
     ax_hist3.set_title("Contrast Stretched", color = 'g')
     ax_hist1.set_ylim([0,max(pixels1)])
     ax_hist3.set_ylim([0,max(pixels3)])
-    ax_hist1.set_xlim([np.median(fig2)-0.25,np.median(fig2)+0.25])
+    ax_hist1.set_xlim([np.median(fig1)-0.25,np.median(fig1)+0.25])
     #ax_cdf1.set_ylim([0,1])
     ax_hist2.set_xlim([np.median(fig2)-0.5,np.median(fig2)+0.5])
     ax_hist3.set_xlim([0,1])
@@ -166,9 +166,6 @@ def IRISpgm_scanner(mirror_file, scan_list, image_detail_toggle):
         pic = border_masker(pic)
         pic_rescale = border_masker(pic_rescale)
 
-        # pic[0:border_mask,:], pic[-(border_mask):,:] = pic.max(), pic.max()
-        # pic[:,0:border_mask], pic[:,-border_mask:] = pic.max(), pic.max()
-
         pix_area = (pic != pic.max()).sum()
         pix_sz_micron = 5.86
         mag = 40
@@ -208,10 +205,17 @@ def IRISpgm_scanner(mirror_file, scan_list, image_detail_toggle):
                 y,x,r = d_blobs[i]
                 y = int(y); x = int(x)
                 r = int(math.ceil(r))
-                #print(y,x,r)
                 point_lum = image[y,x]
+
                 bg = image[y-(r):y+(r+1),x-(r):x+(r+1)]
-                bg_circ = np.hstack([bg[0,1:-1],bg[:,0],bg[-1,1:-1],bg[:,-1]])
+                #bg = np.full([r+1,r+1], point_lum)
+
+                try: bg_circ = np.hstack([bg[0,1:-1],bg[:,0],bg[-1,1:-1],bg[:,-1]])
+                except IndexError:
+                    bg = np.full([r+1,r+1], point_lum)
+                    bg_circ = np.hstack([bg[0,1:-1],bg[:,0],bg[-1,1:-1],bg[:,-1]])
+                    print(y,x, "there was an index error")
+
                 bg_lum_avg = np.mean(bg_circ)
                 bg_lum_sdm_pt = np.std(bg_circ) / math.sqrt(len(bg_circ))
                 perc_contrast_pt = ((point_lum - bg_lum_avg) * 100) / bg_lum_avg
@@ -219,10 +223,6 @@ def IRISpgm_scanner(mirror_file, scan_list, image_detail_toggle):
                 back_lum_sdm.append([bg_lum_sdm_pt])
                 zslice_list.append([zslice])
                 i += 1
-
-            # print(len(perc_contrast))
-            # print(len(back_lum_sdm))
-            # print(len(zslice_list))
 
             d_blobs = np.append(d_blobs, np.asarray(perc_contrast), axis = 1)
             d_blobs = np.append(d_blobs, np.asarray(back_lum_sdm), axis = 1)
@@ -234,16 +234,14 @@ def IRISpgm_scanner(mirror_file, scan_list, image_detail_toggle):
             particle_array = np.concatenate((particle_array, particles))
             print("Particles in image: " + str(len(particles)) + "\n")
             return particle_array
-
+#---------------------------------------------------------------------------------------------#
         total_particles = particle_quant(pic, vis_blobs, total_particles, zslice, sdm_filter)
 
     particle_df = pd.DataFrame(total_particles)
-    particle_df.rename(columns = {0:'y', 1:'x', 2:'r', 3:'pc', 4:'sdm', 5:'z'},
-                            inplace = True)
+    particle_df.rename(columns = {0:'y', 1:'x', 2:'r', 3:'pc', 4:'sdm', 5:'z'},inplace = True)
 #---------------------------------------------------------------------------------------------#
     # Duplicate Particle Detector:  Removes duplicate particles by rounding method
 #---------------------------------------------------------------------------------------------#
-
     def dupe_finder(DFrame):
         xrd5 = (DFrame.x/5).round()*5; yrd5 = (DFrame.y/5).round()*5
         xrd10 = DFrame.x.round(-1); yrd10 = DFrame.y.round(-1)
@@ -274,7 +272,7 @@ def IRISpgm_scanner(mirror_file, scan_list, image_detail_toggle):
     print("Unique particles counted: " + str(particle_count) +"\n")
 
 #---------------------------------------------------------------------------------------------#
-#### Fluorescent File Processer
+#### Fluorescent File Processer WORK IN PRORGRESS
     min_sig = 0.9; max_sig = 2; thresh = .12
 #---------------------------------------------------------------------------------------------#
     if fluor_files:
@@ -379,10 +377,12 @@ def IRISpgm_scanner(mirror_file, scan_list, image_detail_toggle):
     #                         color = 'white', linewidth = 1,
     #                         fill = True, alpha = 1)
     #     axes.add_patch(point)
+    #if particle_count > len(z_list):
+    print(len(pc_hist))
     hist_vals, hbins, hist_patches = ax_hist.hist(pc_hist, bins = 200, range = [0,30],
-                                            linewidth = 2, alpha = 0.5,stacked = True,
-                                            color = colormap[:max(z_list)],
-                                            label = z_list)
+                                                  linewidth = 2, alpha = 0.5,stacked = True,
+                                                  color = colormap[:len(pc_hist)],
+                                                  label = z_list)
     ax_hist.patch.set_alpha(0.5)
     ax_hist.patch.set_facecolor('black')
     ax_hist.legend(loc = 'best')
@@ -509,7 +509,13 @@ def nano_csv_reader(chip_name, spot_data, csv_list):
     return min_corr, spot_data, particle_dict, contrast_window
 #*********************************************************************************************#
 #*********************************************************************************************#
-def virago_csv_reader(chip_name, csv_list):
+def virago_csv_reader(chip_name, csv_list, vir_toggle):
+    if vir_toggle is False:
+        min_corr = input("\nWhat is the correlation cutoff for particle count?"+
+                         " (choose value between 0.5 and 1)\t")
+        if min_corr == "": min_corr = 0.75
+        min_corr = float(min_corr)
+        min_corr_str = str("%.2F" % min_corr)
     contrast_window = str(input("\nEnter the minimum and maximum percent contrast values," +
                                 "separated by a comma (for VSV, 0.5-6% works well)\t"))
     contrast_window = contrast_window.split(",")
@@ -521,7 +527,7 @@ def virago_csv_reader(chip_name, csv_list):
         csv_data = pd.read_table(
                                  csvfile, sep = ',', skiprows = [0],
                                  error_bad_lines = False, usecols = [1,2,3,4,5,6],
-                                 header = None ,names = ("y", "x", "r", "pc", "sdm",'z')
+                                 header = None, names = ("y", "x", "r", "pc", "sdm",'z')
                                 )
         #print(csv_data)
         kept_particles = [float(val) for val in csv_data.pc if float(contrast_window[0]) < float(val)
@@ -677,7 +683,6 @@ for spot in chip_file:
     for key in jargon_dict:
         if mAb_name.endswith(key) or mAb_name.startswith(key):
             mAb_name = jargon_dict[key]
-    # mAb_name = [jargon_dict[key] for key in jargon_dict if mAb_name.endswith(key) or mAb_name.startswith(key)]
     mAb_dict[q + 1] = mAb_name
     q += 1
 print(mAb_dict)
@@ -755,7 +760,7 @@ for val in mAb_dict.values():
 
 #*********************************************************************************************#
 # PGM Scanning
-spot = 1 ##Change this.......... to only scan certain spots
+spot = 7 ##Change this.......... to only scan certain spots
 #*********************************************************************************************#
 
 if pgm_list:
@@ -835,7 +840,7 @@ if pgm_toggle is True:
 #os.chdir(iris_path.strip('"'))
 
 if len(vir_csv_list) == (len(txt_list) - spot_counter):
-    particle_count_vir, contrast_window, particle_dict = virago_csv_reader(chip_name, vir_csv_list)
+    particle_count_vir, contrast_window, particle_dict = virago_csv_reader(chip_name, vir_csv_list, vir_toggle = True)
 
     area_list = np.array([(float(csvfile.split(".")[-3]) / 1e6) for csvfile in vir_csv_list])
     spot_data_vir['area_sqmm'] = area_list
