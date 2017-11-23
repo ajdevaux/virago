@@ -387,7 +387,6 @@ def IRISpgm_scanner(mirror_file, scan_list, image_detail_toggle):
     ax_hist.patch.set_facecolor('black')
     ax_hist.legend(loc = 'best')
 
-    print(math.ceil(np.median(pc)))
     if math.ceil(np.median(pc)) > 6: hist_x_axis = math.ceil(np.median(pc)*2.5)
     else: hist_x_axis = 6
     ax_hist.set_xlim([0,np.ceil(hist_max)])
@@ -963,6 +962,7 @@ def spot_remover(spot_data):
 #####################################################################
 #--------------------------------------------------------------------
 k = 0
+scan_series = spot_data.scan_number
 for val in spot_set:
     x = 1
     for val in pass_labels:
@@ -1067,7 +1067,6 @@ print('File generated: '+ csv_spot_data)
 # Bar Plot Generator
 #####################################################################
 #--------------------------------------------------------------------
-scan_series = spot_data.scan_number
 first_scan = min(scan_series)
 last_scan = max(scan_series)
 baseline = (spot_data[scan_series == first_scan][['spot_type', 'kparticle_density']]).reset_index(drop = True)
