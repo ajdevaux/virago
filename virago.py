@@ -1,17 +1,18 @@
 #! /usr/local/bin/python3
-from datetime import datetime
+from __future__ import division
 from future.builtins import input
+from datetime import datetime
 from lxml import etree
-#from mpl_toolkits.mplot3d import Axes3D
+from numba import jit
 import matplotlib.pyplot as plt
-#import matplotlib.image as mpimg
 import matplotlib.mlab as mlab
 import pandas as pd
 import numpy as np
 from scipy import stats
 from skimage import exposure, feature, io, transform, filters
 import glob, os, json, sys, math, warnings
-# if int(sys.version[0]) == 3:
+#if int(sys.version[0]) is 2:
+
 #     import joypy
 #from funks import IRIScsv_reader, IRISpgm_scanner, joyplot, density_normalizer
 pd.set_option('display.width', 1000)
@@ -77,15 +78,182 @@ def image_details(fig1, fig2, fig3, pic_edge, dpi):
     plt.close('all')
     return hbins1, pic_cdf1
 #*********************************************************************************************#
+def display(im3D, cmap = "gray", step = 1):
+    _, axes = plt.subplots(nrows = int(np.ceil(zslice_count/4)),
+                           ncols = 4,
+                           figsize = (16, 14))
+    vmin = im3D.min()
+    vmax = im3D.max()
+
+    for ax, image in zip(axes.flatten(), im3D[::step]):
+        ax.imshow(image, cmap=cmap, vmin=vmin, vmax=vmax)
+        ax.set_xticks([])
+        ax.set_yticks([])
+
+    plt.show()
+    plt.close('all')
+#*********************************************************************************************#
+def clahe_3D(im3D, cliplim = 0.005):
+    im3D_clahe = np.empty_like(pic3D_norm)
+    for plane, image in enumerate(im3D):
+        im3D_clahe[plane] = exposure.equalize_adapthist(image, clip_limit = cliplim)
+    return im3D_clahe
+#*********************************************************************************************#
+def rescale_3D(im3D):
+    im3D_rescale = np.empty_like(pic3D_norm)
+    for plane, image in enumerate(im3D):
+        p1,p2 = np.percentile(image, (2, 98))
+        im3D_rescale[plane] = exposure.rescale_intensity(image, in_range=(p1,p2))
+    return im3D_rescale
+#*********************************************************************************************#
+def masker_3D(im3D, disk_mask):
+    border_mask = 5
+    for image in im3D:
+        image[0:border_mask,:], image[-(border_mask):,:] = image.max(), image.max()
+        image[:,0:border_mask], image[:,-(border_mask):] = image.max(), image.max()
+        image[disk_mask] = image.max()
+#*********************************************************************************************#
+def blob_detect_3D(im3D, min_sig, max_sig, thresh):
+    i = 1
+    total_blobs = np.empty(shape = (0,4))
+    for image in im3D:
+        blobs = feature.blob_dog(
+                                 image, min_sigma = min_sig, max_sigma = max_sig,
+                                 threshold = thresh, overlap = 0
+                                ) ## Difference of Gaussian algorithm
+        blobs[:,2] = blobs[:,2]*math.sqrt(2)
+        if len(blobs) == 0:
+            print("No blobs here")
+            # blobs = np.zeros(3)
+            # blobs = np.append(blobs,i)
+            blobs = np.empty(shape = (1,4))
+            print(blobs.shape)
+        else:
+            z_arr = np.full((len(blobs),1),i)
+            blobs = np.append(blobs,z_arr, axis = 1)
+        total_blobs = np.append(total_blobs, blobs, axis = 0)
+        print("Image scanned: " + png + "-Slice " + str(i))
+        i += 1
+    return total_blobs
+#*********************************************************************************************#
+def particle_quant_3D(im3D, d_blobs, sdm_filter):
+    i = 0
+    particle_array = np.empty(shape = (0,6))
+    perc_contrast, bg_lum_sdm, zslice_list = [],[],[]
+    for blob in d_blobs:
+        y,x,r,z = d_blobs[i]
+        y = int(y); x = int(x); z = int(z-1); r = int(math.ceil(r))
+        point_lum = im3D[ z , y , x ]
+        bg = im3D[ z , y-(r):y+(r+1) , x-(r):x+(r+1) ]
+
+        try: bg_circ = np.hstack([bg[0,1:-1],bg[:,0],bg[-1,1:-1],bg[:,-1]])
+        except IndexError:
+            bg = np.full([r+1,r+1], point_lum)
+            bg_circ = np.hstack([bg[0,1:-1],bg[:,0],bg[-1,1:-1],bg[:,-1]])
+
+        bg_lum_avg = np.mean(bg_circ)
+        bg_lum_sdm_pt = np.std(bg_circ) / math.sqrt(len(bg_circ))
+
+        perc_contrast_pt = ((point_lum - bg_lum_avg) * 100) / bg_lum_avg
+        perc_contrast.append([perc_contrast_pt])
+        bg_lum_sdm.append([bg_lum_sdm_pt])
+        #zslice_list.append([zslice])
+        i += 1
+
+    d_blobs = np.append(d_blobs, np.asarray(perc_contrast), axis = 1)
+    d_blobs = np.append(d_blobs, np.asarray(bg_lum_sdm), axis = 1)
+
+    particles = d_blobs[(d_blobs[:,5] < sdm_filter) & (d_blobs[:,4] > 0)]
+    if len(particles) == 0: particles = [[0,0,0,0,0,0]]
+    print("\nImage stack scanned: ")# + str(pgm))
+    #print("Particles in image: " + str(len(particles)) + "\n")
+    return particles
+#*********************************************************************************************#
+def dupe_finder(DFrame):
+    xrd5 = (DFrame.x/5).round()*5; yrd5 = (DFrame.y/5).round()*5
+    xrd10 = DFrame.x.round(-1); yrd10 = DFrame.y.round(-1)
+    xceil = np.ceil(DFrame.x/10)*10; yceil = np.ceil(DFrame.y/10)*10
+    xfloor = np.floor(DFrame.x/10)*10; yfloor = np.floor(DFrame.y/10)*10
+    DFrame['yx_5'] = pd.Series(list(zip(yrd5,xrd5)))
+    DFrame['yx_10'] = pd.Series(list(zip(yrd10,xrd10)))
+    DFrame['yx_5/10'] = pd.Series(list(zip(yrd5,xrd10)))
+    DFrame['yx_10/5'] = pd.Series(list(zip(yrd10,xrd5)))
+    DFrame['yx_ceil'] = pd.Series(list(zip(yceil,xceil)))
+    DFrame['yx_floor'] = pd.Series(list(zip(yfloor,xfloor)))
+    return DFrame
+#*********************************************************************************************#
+def dupe_dropper(DFrame, cols_to_drop, sorting_col):
+    DFrame.sort_values([sorting_col], kind = 'quicksort', inplace = True)
+    for column in cols_to_drop:
+        DFrame.drop_duplicates(subset = (column), keep = 'last', inplace = True)
+    DFrame.reset_index(drop = True, inplace = True)
+    return DFrame
+#*********************************************************************************************#
+def processed_image_viewer(image, dpi, particle_df, cy, cx, rad):
+    figsize = (ncols/dpi, nrows/dpi)
+    fig = plt.figure(figsize = figsize, dpi = dpi)
+    axes = plt.Axes(fig,[0,0,1,1])
+    fig.add_axes(axes)
+    axes.set_axis_off()
+    colormap = ['#a50026','#d73027','#f46d43','#fdae61','#fee090',
+                '#ffffbf','#e0f3f8','#abd9e9','#74add1','#4575b4','#313695']
+
+    axes.imshow(pic_to_show, cmap = 'gray')
+    ab_spot = plt.Circle((cx, cy), rad, color='#5A81BB',
+                  linewidth=5, fill=False, alpha = 0.5)
+    axes.add_patch(ab_spot)
+
+    z_list = [int(z) for z in list(set(particle_df.z))]
+    pc_hist = list()
+    ax_hist = plt.axes([.06, .7, .25, .25])
+    hist_max = 6
+    for zslice in z_list:
+        y = particle_df.loc[particle_df.z == zslice].y.reset_index(drop = True)
+        x = particle_df.loc[particle_df.z == zslice].x.reset_index(drop = True)
+        pc = particle_df.loc[particle_df.z == zslice].pc.reset_index(drop = True)
+        if max(pc) > hist_max: hist_max = max(pc)
+        pc_hist.append(np.array(pc))
+        for i in range(0,len(pc)):
+            point = plt.Circle((x[i], y[i]), pc[i] * 2.5,
+                                color = colormap[zslice-1], linewidth = 1,
+                                fill = False, alpha = 1)
+            axes.add_patch(point)
+
+    print(len(pc_hist))
+    hist_vals, hbins, hist_patches = ax_hist.hist(pc_hist, bins = 200, range = [0,30],
+                                                  linewidth = 2, alpha = 0.5,stacked = True,
+                                                  color = colormap[:len(pc_hist)],
+                                                  label = z_list)
+    ax_hist.patch.set_alpha(0.5)
+    ax_hist.patch.set_facecolor('black')
+    ax_hist.legend(loc = 'best')
+
+    if math.ceil(np.median(pc)) > 6: hist_x_axis = math.ceil(np.median(pc)*2.5)
+    else: hist_x_axis = 6
+    ax_hist.set_xlim([0,np.ceil(hist_max)])
+    for spine in ax_hist.spines: ax_hist.spines[spine].set_color('k')
+    ax_hist.tick_params(color = 'k')
+    plt.title("PARTICLE CONTRAST DISTRIBUTION", size = 12, color = 'k')
+    plt.xticks(size = 10, color = 'k')
+    plt.xlabel("% CONTRAST", size = 12, color = 'k')
+    plt.yticks(size = 10, color = 'k')
+    plt.ylabel("PARTICLE COUNT", color = 'k')
+
+    if not os.path.exists('../virago_output/'+ chip_name + '/processed_images'):
+        os.makedirs('../virago_output/' + chip_name + '/processed_images')
+    plt.savefig('../virago_output/' + chip_name + '/processed_images/' + png +'.png', dpi = dpi)
+    print("Processed image generated: " + png + ".png")
+    plt.show()
+    plt.close()
+#*********************************************************************************************#
+#*********************************************************************************************#
 def IRISpgm_scanner(mirror_file, scan_list, image_detail_toggle):
     #print(scan_list)
-    total_particles = np.empty(shape = (0,6))
-    pic_dict = {}
-    #chip_name_scan = 'pCHIP001.005.010'
-    #pgm_list = sorted(glob.glob('*.pgm'))
-    #pgm_list = [val for val in pgm_list if ".".join(val.split(".")[0:3]) == chip_name_scan]
+
+    #pic_dict = {}
     dpi = 96
-    if not os.path.exists('../virago_output/'+ chip_name): os.makedirs('../virago_output/' + chip_name)
+    if not os.path.exists('../virago_output/'+ chip_name):
+        os.makedirs('../virago_output/' + chip_name)
 
     try: mirror = io.imread(mirror_file)
     except FileNotFoundError: mirror_toggle = False; print("\nMirror file absent\n")
@@ -96,12 +264,194 @@ def IRISpgm_scanner(mirror_file, scan_list, image_detail_toggle):
         [scan_list.remove(file) for file in scan_list if file in fluor_files]
         print("Fluorescent channel detected\n")
         #print(fluor_files)
-    for pgmfile in scan_list:
+    scan_collection = io.imread_collection(scan_list)
+    pic3D = np.array([pic for pic in scan_collection])
+    zslice_count, nrows, ncols = pic3D.shape
+    row, col = np.ogrid[:nrows,:ncols]
 
+    def show_plane(ax, plane, cmap="gray", title=None):
+        ax.imshow(plane, cmap=cmap)
+        ax.set_xticks([])
+        ax.set_yticks([])
+        if title: ax.set_title(title)
+
+    if mirror_toggle is True: pic3D = pic3D / mirror
+
+    norm_scalar = np.median(pic3D) * 2
+    pic3D_norm = pic3D / norm_scalar
+    pic3D_norm[pic3D_norm > 1] = 1
+
+    def display(im3D, cmap = "gray", step = 1):
+        _, axes = plt.subplots(nrows = int(np.ceil(zslice_count/4)),
+                               ncols = 4,
+                               figsize = (16, 14))
+        vmin = im3D.min()
+        vmax = im3D.max()
+
+        for ax, image in zip(axes.flatten(), im3D[::step]):
+            ax.imshow(image, cmap=cmap, vmin=vmin, vmax=vmax)
+            ax.set_xticks([])
+            ax.set_yticks([])
+
+        plt.show()
+        plt.close('all')
+
+
+    #(pdf_size * 0.135) - 0.001
+    #---------------------------------------------------------------------------------------------#
+    #warnings.simplefilter("ignore", UserWarning)
+    #print(clahe_cliplim)
+    #from numba import guvectorize, float64, float32, cuda
+    #@jit(["float64[:,:,:](float64[:,:,:], float32)"])
+    def clahe_3D(im3D, cliplim = 0.002):
+        im3D_clahe = np.empty_like(pic3D_norm)
+        for plane, image in enumerate(im3D):
+            im3D_clahe[plane] = exposure.equalize_adapthist(image, clip_limit = cliplim)
+        return im3D_clahe
+
+    pic3D_clahe = clahe_3D(pic3D_norm)
+
+    p1,p2 = np.percentile(pic3D_clahe, (2, 98))
+    pic3D_rescale = exposure.rescale_intensity(pic3D_clahe, in_range=(p1,p2))
+    pic3D_masked = pic3D_rescale.copy()
+
+    mid_pic = int(np.ceil(zslice_count/2))
+    spot_edge = feature.canny(pic3D_rescale[mid_pic], sigma = 2)
+    hough_radius = range(500, 601, 25)
+    hough_res = transform.hough_circle(spot_edge, hough_radius)
+    accums, cx, cy, rad = transform.hough_circle_peaks(hough_res, hough_radius, total_num_peaks=1)
+
+    if cx < ncols * 0.25 or cx > ncols * 0.75:
+        cx = ncols * 0.5
+        cy = nrows * 0.5
+        rad = rad * 0.5
+    height = row - cy
+    width = col - cx
+    rad = rad - 50
+    print(cx,cy,rad)
+    disk_mask = (width**2 + height**2 > rad**2)
+
+    def masker(im3D, disk_mask):
+        border_mask = 5
+        for image in im3D:
+            image[0:border_mask,:], image[-(border_mask):,:] = image.max(), image.max()
+            image[:,0:border_mask], image[:,-(border_mask):] = image.max(), image.max()
+            image[disk_mask] = image.max()
+
+    masker(pic3D_masked, disk_mask)
+    masker(pic3D, disk_mask)
+
+    pix_area = (pic != pic.max()).sum()
+    pix_sz_micron = 5.86
+    mag = 40
+    if (nrows,ncols) == (1080,1072):
+        pix_sz_micron = 3.45
+        mag = 44
+    area_sqmm = round(((pix_area * (pix_sz_micron)**2) / mag**2)*1e-6, 6)
+    area_squm = int(area_sqmm * 1e6)
+
+    def blob_detect_3D(im3D, min_sig = 1, max_sig = 2.2, thresh = 0.05):
+        i = 1
+        total_blobs = np.empty(shape = (0,4))
+        for image in im3D:
+            blobs = feature.blob_dog(
+                                     image, min_sigma = min_sig, max_sigma = max_sig,
+                                     threshold = thresh, overlap = 0
+                                    ) ## Difference of Gaussian algorithm
+            blobs[:,2] = blobs[:,2]*math.sqrt(2)
+            if len(blobs) == 0:
+                blobs = np.zeros(3)
+            z_arr = np.full((len(blobs),1),i)
+            blobs = np.append(blobs,z_arr, axis = 1)
+            total_blobs = np.append(total_blobs, blobs, axis = 0)
+            print(total_blobs)
+            i += 1
+        return total_blobs
+
+    vis_blobs = blob_detect_3D(pic3D_masked)
+
+    sdm_filter = 65 ###Make lower if edge particles are being detected
+    if mirror_toggle is True: sdm_filter = sdm_filter / (np.mean(mirror) * 0.5)
+    def particle_quant_3D(im3D, d_blobs, sdm_filter):
+        i = 0
+        particle_array = np.empty(shape = (0,6))
+        perc_contrast, bg_lum_sdm, zslice_list = [],[],[]
+        for blob in d_blobs:
+            y,x,r,z = d_blobs[i]
+            y = int(y); x = int(x); z = int(z-1); r = int(math.ceil(r))
+            point_lum = im3D[ z , y , x ]
+            bg = im3D[ z , y-(r):y+(r+1) , x-(r):x+(r+1) ]
+
+            try: bg_circ = np.hstack([bg[0,1:-1],bg[:,0],bg[-1,1:-1],bg[:,-1]])
+            except IndexError:
+                bg = np.full([r+1,r+1], point_lum)
+                bg_circ = np.hstack([bg[0,1:-1],bg[:,0],bg[-1,1:-1],bg[:,-1]])
+
+            bg_lum_avg = np.mean(bg_circ)
+            bg_lum_sdm_pt = np.std(bg_circ) / math.sqrt(len(bg_circ))
+
+            perc_contrast_pt = ((point_lum - bg_lum_avg) * 100) / bg_lum_avg
+            perc_contrast.append([perc_contrast_pt])
+            bg_lum_sdm.append([bg_lum_sdm_pt])
+            #zslice_list.append([zslice])
+            i += 1
+
+        d_blobs = np.append(d_blobs, np.asarray(perc_contrast), axis = 1)
+        d_blobs = np.append(d_blobs, np.asarray(bg_lum_sdm), axis = 1)
+
+        particles = d_blobs[(d_blobs[:,5] < sdm_filter) & (d_blobs[:,4] > 0)]
+        if len(particles) == 0: particles = [[0,0,0,0,0,0]]
+        print("\nImage stack scanned: ")# + str(pgm))
+        print("Particles in image: " + str(len(particles)) + "\n")
+        return particles
+
+    total_particles = particle_quant_3D(pic3D, vis_blobs, sdm_filter)
+    particle_df = pd.DataFrame(total_particles)
+    particle_df.rename(columns = {0:'y', 1:'x', 2:'r', 3:'z', 4:'pc', 5:'sdm'},inplace = True)
+
+    def dupe_finder(DFrame):
+        xrd5 = (DFrame.x/5).round()*5; yrd5 = (DFrame.y/5).round()*5
+        xrd10 = DFrame.x.round(-1); yrd10 = DFrame.y.round(-1)
+        xceil = np.ceil(DFrame.x/10)*10; yceil = np.ceil(DFrame.y/10)*10
+        xfloor = np.floor(DFrame.x/10)*10; yfloor = np.floor(DFrame.y/10)*10
+        DFrame['yx_5'] = pd.Series(list(zip(yrd5,xrd5)))
+        DFrame['yx_10'] = pd.Series(list(zip(yrd10,xrd10)))
+        DFrame['yx_5/10'] = pd.Series(list(zip(yrd5,xrd10)))
+        DFrame['yx_10/5'] = pd.Series(list(zip(yrd10,xrd5)))
+        DFrame['yx_ceil'] = pd.Series(list(zip(yceil,xceil)))
+        DFrame['yx_floor'] = pd.Series(list(zip(yfloor,xfloor)))
+        return DFrame
+
+    rounding_cols = ['yx_5','yx_10','yx_10/5','yx_5/10','yx_ceil','yx_floor']
+    def dupe_dropper(DFrame, cols_to_drop, sorting_col):
+        DFrame.sort_values([sorting_col], kind = 'quicksort', inplace = True)
+        for column in cols_to_drop:
+            DFrame.drop_duplicates(subset = (column), keep = 'last', inplace = True)
+        DFrame.reset_index(drop = True, inplace = True)
+        return DFrame
+
+    particle_df = dupe_finder(particle_df)
+    particle_df = dupe_dropper(particle_df, rounding_cols, sorting_col = 'pc')
+    particle_count = len(particle_df)
+    print("Unique particles counted: " + str(particle_count) +"\n")
+
+
+
+
+
+
+
+
+
+
+
+    for pgmfile in scan_list:
         pgm_name = pgmfile.split(".")
         #chip_name = str(pgm_name[0])
         zslice = int(pgm_name[3])
         png = '.'.join(pgm_name[:3])
+
+
         pic = io.imread(pgmfile)
         nrows, ncols = pic.shape
         row, col = np.ogrid[:nrows,:ncols]
@@ -111,12 +461,12 @@ def IRISpgm_scanner(mirror_file, scan_list, image_detail_toggle):
         norm_scalar = np.median(pic) * 2
         pic_norm = pic / norm_scalar
         pic_norm[pic_norm > 1] = 1
-#---------------------------------------------------------------------------------------------#
+
         # ANTIBODY SPOT DETECTION:
         # Decrease canny_sig if spots are not being detected accurately; increase if spot detection
         # takes too long.
         clahe_cliplim = .002#(pdf_size * 0.135) - 0.001
-#---------------------------------------------------------------------------------------------#
+
         warnings.simplefilter("ignore", UserWarning)
         #print(clahe_cliplim)
         pic_clahe = exposure.equalize_adapthist(pic_norm, clip_limit = clahe_cliplim)
@@ -157,6 +507,7 @@ def IRISpgm_scanner(mirror_file, scan_list, image_detail_toggle):
         pic_rescale[outer_disk_mask] = pic_rescale.max()
         pic[outer_disk_mask] = pic.max()
 
+        @jit
         def border_masker(image):
             border_mask = 5
             image[0:border_mask,:], image[-(border_mask):,:] = image.max(), image.max()
@@ -175,12 +526,12 @@ def IRISpgm_scanner(mirror_file, scan_list, image_detail_toggle):
 
         area_sqmm = round(((pix_area * (pix_sz_micron)**2) / mag**2)*1e-6, 6)
         area_squm = int(area_sqmm * 1e6)
-#---------------------------------------------------------------------------------------------#
+
         # BLOB DETECTION: Make threshold lower to detect more particles; make min_sigma lower to
         #                 detect smaller particles
         min_sig = 1; max_sig = 2.2; thresh = .05
         if mirror_toggle is False: min_sig = 0.75
-#---------------------------------------------------------------------------------------------#
+
         def blob_detect(image, min_sig, max_sig, thresh):
             blobs = feature.blob_dog(
                                      image, min_sigma = min_sig, max_sigma = max_sig,
@@ -192,15 +543,17 @@ def IRISpgm_scanner(mirror_file, scan_list, image_detail_toggle):
             return blobs
 
         vis_blobs = blob_detect(pic_rescale, min_sig, max_sig, thresh)
-#---------------------------------------------------------------------------------------------#
+
         # SDM Background Filter: Removes blobs on high-contrast edges
         sdm_filter = 65 ###Make lower if edge particles are being detected
         if mirror_toggle is True: sdm_filter = sdm_filter / (np.mean(mirror) * 0.5)
         #This measures the percent contrast of blobs and removes blobs likely to not be particles
-#---------------------------------------------------------------------------------------------#
-        def particle_quant(image, d_blobs, particle_array, zslice, sdm_filter):
+
+        def particle_quant(image, pgm, d_blobs, z, sdm_filter):
             i = 0
-            perc_contrast, back_lum_sdm, zslice_list = [],[],[]
+            particle_array = np.empty(shape = (0,6))
+            perc_contrast, bg_lum_sdm, zslice_list = [],[],[]
+
             for blob in d_blobs:
                 y,x,r = d_blobs[i]
                 y = int(y); x = int(x)
@@ -214,34 +567,36 @@ def IRISpgm_scanner(mirror_file, scan_list, image_detail_toggle):
                 except IndexError:
                     bg = np.full([r+1,r+1], point_lum)
                     bg_circ = np.hstack([bg[0,1:-1],bg[:,0],bg[-1,1:-1],bg[:,-1]])
-                    print(y,x, "there was an index error")
+                    # print(y,x, "there was an index error")
 
                 bg_lum_avg = np.mean(bg_circ)
                 bg_lum_sdm_pt = np.std(bg_circ) / math.sqrt(len(bg_circ))
+
+                #bg_lum_sdm_pt = np.std(bg_circ) / math.sqrt(len(bg_circ))
                 perc_contrast_pt = ((point_lum - bg_lum_avg) * 100) / bg_lum_avg
                 perc_contrast.append([perc_contrast_pt])
-                back_lum_sdm.append([bg_lum_sdm_pt])
+                bg_lum_sdm.append([bg_lum_sdm_pt])
                 zslice_list.append([zslice])
                 i += 1
-
+            print(len(bg_lum_sdm))
             d_blobs = np.append(d_blobs, np.asarray(perc_contrast), axis = 1)
-            d_blobs = np.append(d_blobs, np.asarray(back_lum_sdm), axis = 1)
+            d_blobs = np.append(d_blobs, np.asarray(bg_lum_sdm), axis = 1)
             d_blobs = np.append(d_blobs, np.asarray(zslice_list), axis = 1)
 
             particles = d_blobs[(d_blobs[:,4] < sdm_filter) & (d_blobs[:,3] > 0)]
             if len(particles) == 0: particles = [[0,0,0,0,0,0]]
-            print("\nImage scanned: " + str(pgmfile))
+            print("\nImage scanned: " + str(pgm))
             particle_array = np.concatenate((particle_array, particles))
             print("Particles in image: " + str(len(particles)) + "\n")
             return particle_array
-#---------------------------------------------------------------------------------------------#
-        total_particles = particle_quant(pic, vis_blobs, total_particles, zslice, sdm_filter)
+
+        total_particles = particle_quant(pic, pgmfile, vis_blobs, zslice, sdm_filter)
 
     particle_df = pd.DataFrame(total_particles)
     particle_df.rename(columns = {0:'y', 1:'x', 2:'r', 3:'pc', 4:'sdm', 5:'z'},inplace = True)
-#---------------------------------------------------------------------------------------------#
+
     # Duplicate Particle Detector:  Removes duplicate particles by rounding method
-#---------------------------------------------------------------------------------------------#
+
     def dupe_finder(DFrame):
         xrd5 = (DFrame.x/5).round()*5; yrd5 = (DFrame.y/5).round()*5
         xrd10 = DFrame.x.round(-1); yrd10 = DFrame.y.round(-1)
@@ -272,7 +627,7 @@ def IRISpgm_scanner(mirror_file, scan_list, image_detail_toggle):
     print("Unique particles counted: " + str(particle_count) +"\n")
 
 #---------------------------------------------------------------------------------------------#
-#### Fluorescent File Processer WORK IN PRORGRESS
+### Fluorescent File Processer WORK IN PRORGRESS
     min_sig = 0.9; max_sig = 2; thresh = .12
 #---------------------------------------------------------------------------------------------#
     if fluor_files:
@@ -296,8 +651,8 @@ def IRISpgm_scanner(mirror_file, scan_list, image_detail_toggle):
             fluor_blobs = blob_detect(fluor_to_count, min_sig, max_sig, thresh)
             #print(len(fluor_blobs))
 
-            fluor_particles = particle_quant(pic_fluor, fluor_blobs,
-                                             fluor_particles, zslice, sdm_filter)
+            fluor_particles = particle_quant(pic_fluor, pgmfile, fluor_blobs,
+                                              zslice, sdm_filter)
 
 
             fluor_part_df = pd.DataFrame(fluor_particles)
@@ -337,89 +692,89 @@ def IRISpgm_scanner(mirror_file, scan_list, image_detail_toggle):
 
 #---------------------------------------------------------------------------------------------#
 ####Processed Image Renderer
-    pic_to_show = pic_rescale_mid
-#---------------------------------------------------------------------------------------------#
-    #title = png + " Particles"
-    figsize = (ncols/dpi, nrows/dpi)
-    fig = plt.figure(figsize = figsize, dpi = dpi)
-    axes = plt.Axes(fig,[0,0,1,1])
-    fig.add_axes(axes)
-    axes.set_axis_off()
-    colormap = ['#a50026','#d73027','#f46d43','#fdae61','#fee090','#ffffbf','#e0f3f8','#abd9e9','#74add1','#4575b4','#313695']
+#     pic_to_show = pic3D_rescale[5]
+# #---------------------------------------------------------------------------------------------#
+#     #title = png + " Particles"
+#     figsize = (ncols/dpi, nrows/dpi)
+#     fig = plt.figure(figsize = figsize, dpi = dpi)
+#     axes = plt.Axes(fig,[0,0,1,1])
+#     fig.add_axes(axes)
+#     axes.set_axis_off()
+#     colormap = ['#a50026','#d73027','#f46d43','#fdae61','#fee090','#ffffbf','#e0f3f8','#abd9e9','#74add1','#4575b4','#313695']
+#
+#     axes.imshow(pic_to_show, cmap = 'gray')
+#     ab_spot = plt.Circle((cx, cy), rad, color='#5A81BB',
+#                   linewidth=5, fill=False, alpha = 0.5)
+#     axes.add_patch(ab_spot)
+#
+#
+#     z_list = [int(z) for z in list(set(particle_df.z))]
+#     pc_hist = list()
+#     ax_hist = plt.axes([.06, .7, .25, .25])
+#     hist_max = 6
+#     for zslice in z_list:
+#         y = particle_df.loc[particle_df.z == zslice].y.reset_index(drop = True)
+#         x = particle_df.loc[particle_df.z == zslice].x.reset_index(drop = True)
+#         pc = particle_df.loc[particle_df.z == zslice].pc.reset_index(drop = True)
+#         if max(pc) > hist_max: hist_max = max(pc)
+#         pc_hist.append(np.array(pc))
+#         for i in range(0,len(pc)):
+#             point = plt.Circle((x[i], y[i]), pc[i] * 2.5,
+#                                 color = colormap[zslice-1], linewidth = 1,
+#                                 fill = False, alpha = 1)
+#             axes.add_patch(point)
+#     #print(pc_hist[0])
+#     # yf = fluor_part_df.y
+#     # xf = fluor_part_df.x
+#     # pcf = fluor_part_df.pc
+#     # for i in range(0,len(pcf)):
+#     #     point = plt.Circle((xf[i], yf[i]), 2.5,#pcf[i] * .1,
+#     #                         color = 'white', linewidth = 1,
+#     #                         fill = True, alpha = 1)
+#     #     axes.add_patch(point)
+#     #if particle_count > len(z_list):
+#     print(len(pc_hist))
+#     hist_vals, hbins, hist_patches = ax_hist.hist(pc_hist, bins = 200, range = [0,30],
+#                                                   linewidth = 2, alpha = 0.5,stacked = True,
+#                                                   color = colormap[:len(pc_hist)],
+#                                                   label = z_list)
+#     ax_hist.patch.set_alpha(0.5)
+#     ax_hist.patch.set_facecolor('black')
+#     ax_hist.legend(loc = 'best')
+#
+#     if math.ceil(np.median(pc)) > 6: hist_x_axis = math.ceil(np.median(pc)*2.5)
+#     else: hist_x_axis = 6
+#     ax_hist.set_xlim([0,np.ceil(hist_max)])
+#     for spine in ax_hist.spines: ax_hist.spines[spine].set_color('k')
+#     ax_hist.tick_params(color = 'k')
+#     plt.title("PARTICLE CONTRAST DISTRIBUTION", size = 12, color = 'k')
+#     plt.xticks(size = 10, color = 'k')
+#     plt.xlabel("% CONTRAST", size = 12, color = 'k')
+#     plt.yticks(size = 10, color = 'k')
+#     plt.ylabel("PARTICLE COUNT", color = 'k')
+#
+#     if not os.path.exists('../virago_output/'+ chip_name + '/processed_images'):
+#         os.makedirs('../virago_output/' + chip_name + '/processed_images')
+#     plt.savefig('../virago_output/' + chip_name + '/processed_images/' + png +'.png', dpi = dpi)
+#     print("Processed image generated: " + png + ".png")
+#     plt.show()
+#     plt.close()
+#
+#
+#     scatter_df = particle_df[(particle_df.pc <= 25) & (particle_df.pc > 10)]
+#
+#     fig = plt.figure(figsize = figsize, dpi = dpi)
+#     subplot = fig.add_subplot(111)
+#
+#     subplot.scatter(scatter_df.x,scatter_df.y,c='r', marker = 'o', alpha = 0.5)
+#     subplot.scatter(fluor_part_df.x,fluor_part_df.y,c='g', marker = '+', alpha = 0.5)
+#     plt.show()
+#     plt.close()
 
-    axes.imshow(pic_to_show, cmap = 'gray')
-    ab_spot = plt.Circle((cx, cy), rad, color='#5A81BB',
-                  linewidth=5, fill=False, alpha = 0.5)
-    axes.add_patch(ab_spot)
 
-
-    z_list = [int(z) for z in list(set(particle_df.z))]
-    pc_hist = list()
-    ax_hist = plt.axes([.06, .7, .25, .25])
-    hist_max = 6
-    for zslice in z_list:
-        y = particle_df.loc[particle_df.z == zslice].y.reset_index(drop = True)
-        x = particle_df.loc[particle_df.z == zslice].x.reset_index(drop = True)
-        pc = particle_df.loc[particle_df.z == zslice].pc.reset_index(drop = True)
-        if max(pc) > hist_max: hist_max = max(pc)
-        pc_hist.append(np.array(pc))
-        for i in range(0,len(pc)):
-            point = plt.Circle((x[i], y[i]), pc[i] * 2.5,
-                                color = colormap[zslice-1], linewidth = 1,
-                                fill = False, alpha = 1)
-            axes.add_patch(point)
-    #print(pc_hist[0])
-    # yf = fluor_part_df.y
-    # xf = fluor_part_df.x
-    # pcf = fluor_part_df.pc
-    # for i in range(0,len(pcf)):
-    #     point = plt.Circle((xf[i], yf[i]), 2.5,#pcf[i] * .1,
-    #                         color = 'white', linewidth = 1,
-    #                         fill = True, alpha = 1)
-    #     axes.add_patch(point)
-    #if particle_count > len(z_list):
-    print(len(pc_hist))
-    hist_vals, hbins, hist_patches = ax_hist.hist(pc_hist, bins = 200, range = [0,30],
-                                                  linewidth = 2, alpha = 0.5,stacked = True,
-                                                  color = colormap[:len(pc_hist)],
-                                                  label = z_list)
-    ax_hist.patch.set_alpha(0.5)
-    ax_hist.patch.set_facecolor('black')
-    ax_hist.legend(loc = 'best')
-
-    if math.ceil(np.median(pc)) > 6: hist_x_axis = math.ceil(np.median(pc)*2.5)
-    else: hist_x_axis = 6
-    ax_hist.set_xlim([0,np.ceil(hist_max)])
-    for spine in ax_hist.spines: ax_hist.spines[spine].set_color('k')
-    ax_hist.tick_params(color = 'k')
-    plt.title("PARTICLE CONTRAST DISTRIBUTION", size = 12, color = 'k')
-    plt.xticks(size = 10, color = 'k')
-    plt.xlabel("% CONTRAST", size = 12, color = 'k')
-    plt.yticks(size = 10, color = 'k')
-    plt.ylabel("PARTICLE COUNT", color = 'k')
-
-    if not os.path.exists('../virago_output/'+ chip_name + '/processed_images'):
-        os.makedirs('../virago_output/' + chip_name + '/processed_images')
-    plt.savefig('../virago_output/' + chip_name + '/processed_images/' + png +'.png', dpi = dpi)
-    print("Processed image generated: " + png + ".png")
-    plt.show()
-    plt.close()
-
-
-    # scatter_df = particle_df[(particle_df.pc <= 25) & (particle_df.pc > 10)]
-
-    # fig = plt.figure(figsize = figsize, dpi = dpi)
-    # subplot = fig.add_subplot(111)
-    #
-    # subplot.scatter(scatter_df.x,scatter_df.y,c='r', marker = 'o', alpha = 0.5)
-    # subplot.scatter(fluor_part_df.x,fluor_part_df.y,c='g', marker = '+', alpha = 0.5)
-    # plt.show()
-    # plt.close()
-
-
-    #vis_fluor_df = pd.concat([particle_df, fluor_part_df])
-    #vis_fluor_df = dupe_finder(vis_fluor_df)
-    #print(vis_fluor_df)
+    vis_fluor_df = pd.concat([particle_df, fluor_part_df])
+    vis_fluor_df = dupe_finder(vis_fluor_df)
+    print(vis_fluor_df)
     if fluor_files:
         fluor_part_df = dupe_finder(fluor_part_df)
         #rounding_cols = ['yx_5','yx_10','yx_10/5','yx_5/10','yx_ceil','yx_floor']
@@ -440,20 +795,20 @@ def IRISpgm_scanner(mirror_file, scan_list, image_detail_toggle):
             merge_df.drop(merging_cols, axis = 1, inplace = True)
             print(merge_df)
             print(len(merge_df))
-        # merge_df.drop(['yx_5','yx_10/5','yx_5/10','yx_ceil','yx_floor'],
-        #                     axis = 1, inplace = True)
-        # merge_df.fillna(0, inplace=True)
-        #
-        # nonmatches = (merge_df.pc_y == 0).sum()
-        # print(nonmatches / len())
-            fig = plt.figure(figsize = figsize, dpi = dpi)
-            subplot = fig.add_subplot(111)
-            subplot.scatter(merge_df.pc_x,merge_df.pc_y, c='g', marker = '+', alpha = 0.5)
-            subplot.set_xlabel("Visible Percent Contrast", color = 'gray')
-            subplot.set_ylabel("Fluorescent Percent Contrast", color = 'gray')
-            plt.title = (png + ": Correlation of Visible Particle Size with Fluorescent Signal")
-            plt.show()
-            plt.close()
+        merge_df.drop(['yx_5','yx_10/5','yx_5/10','yx_ceil','yx_floor'],
+                            axis = 1, inplace = True)
+        merge_df.fillna(0, inplace=True)
+
+        nonmatches = (merge_df.pc_y == 0).sum()
+        print(nonmatches / len())
+        fig = plt.figure(figsize = figsize, dpi = dpi)
+        subplot = fig.add_subplot(111)
+        subplot.scatter(merge_df.pc_x,merge_df.pc_y, c='g', marker = '+', alpha = 0.5)
+        subplot.set_xlabel("Visible Percent Contrast", color = 'gray')
+        subplot.set_ylabel("Fluorescent Percent Contrast", color = 'gray')
+        plt.title = (png + ": Correlation of Visible Particle Size with Fluorescent Signal")
+        plt.show()
+        plt.close()
 
     particle_df.drop(rounding_cols, axis = 1, inplace = True)
     if not os.path.exists('../virago_output/'+ chip_name + '/vcounts'):
@@ -647,13 +1002,16 @@ csv_list = sorted(glob.glob('*.csv'))
 xml_list = sorted(glob.glob('*/*.xml'))
 if not xml_list: xml_list = sorted(glob.glob('../*/*.xml'))
 chip_name = pgm_list[0].split(".")[0]
+
 mirror_file = str(glob.glob('*000.pgm')).strip("'[]'")
 if mirror_file:
     pgm_list.remove(mirror_file)
-    print("Mirror file present")
-else: print("Mirror file absent") #mirror_toggle = False
+    mirror = io.imread(mirror_file)
+    print("Mirror file detected")
+    mirror_toggle = True
+else: print("Mirror file absent"); mirror_toggle = False
 
-zslice_count = max([int(pgmfile.split(".")[3]) for pgmfile in pgm_list])
+#zslice_count = max([int(pgmfile.split(".")[3]) for pgmfile in pgm_list])
 txtcheck = [file.split(".") for file in txt_list]
 iris_txt = [".".join(file) for file in txtcheck if (len(file) >= 3) and (file[2].isalpha())]
 nv_txt = [".".join(file) for file in txtcheck if (len(file) > 3) and (file[2].isdigit())]
@@ -759,31 +1117,115 @@ for val in mAb_dict.values():
 
 #*********************************************************************************************#
 # PGM Scanning
-spot = 7 ##Change this.......... to only scan certain spots
+spot = 1 ##Change this.......... to only scan certain spots
 #*********************************************************************************************#
-
 if pgm_list:
     pgm_toggle = input("\nPGM files exist. Do you want scan them for particles? (y/[n])\n"
                          + "WARNING: This will take a long time!\t")
     if pgm_toggle.lower() in ('yes', 'y'):
         pgm_toggle = True
-        image_detail_toggle = input("Do you want to render image processing details? y/[n]?\t")
+        #image_detail_toggle = input("Do you want to render image processing details? y/[n]?\t")
         startTime = datetime.now()
         pgm_set = set([".".join(file.split(".")[:3]) for file in pgm_list])
 
         while spot <= spot_counter:
-            pass_per_spot_list = sorted([file for file in pgm_set if int(file.split(".")[1]) == spot])
+            pass_per_spot_list = sorted([file for file in pgm_set
+                                        if int(file.split(".")[1]) == spot])
             passes_per_spot = len(pass_per_spot_list)
 
             scan_range = range(0,passes_per_spot,1)
             for x in scan_range:
                 scan_list = [file for file in pgm_list if file.startswith(pass_per_spot_list[x])]
-                particle_count, particle_df = IRISpgm_scanner(mirror_file, scan_list, image_detail_toggle)
+                dpi = 96
+                if not os.path.exists('../virago_output/'+ chip_name):
+                    os.makedirs('../virago_output/' + chip_name)
+
+                fluor_files = [file for file in scan_list
+                               if file.endswith('A.pgm' or 'B.pgm' or 'C.pgm')]
+                if fluor_files:
+                    [scan_list.remove(file) for file in scan_list if file in fluor_files]
+                    print("Fluorescent channel detected\n")
+                scan_collection = io.imread_collection(scan_list)
+                pgm_name = scan_list[0].split(".")
+                png = '.'.join(pgm_name[:3])
+                pic3D = np.array([pic for pic in scan_collection])
+                zslice_count, nrows, ncols = pic3D.shape
+                row, col = np.ogrid[:nrows,:ncols]
+
+                if mirror_toggle is True:
+                    pic3D = pic3D / mirror
+                    print("Using mirror")
+
+                norm_scalar = np.median(pic3D) * 2
+                pic3D_norm = pic3D / norm_scalar
+                pic3D_norm[pic3D_norm > 1] = 1
+
+                pic3D_clahe = clahe_3D(pic3D_norm)
+
+                pic3D_rescale = rescale_3D(pic3D_clahe)
+                pic3D_masked = pic3D_rescale.copy()
+
+                mid_pic = int(np.ceil(zslice_count/2))
+                spot_edge = feature.canny(pic3D_rescale[mid_pic], sigma = 2)
+                hough_radius = range(500, 601, 25)
+                hough_res = transform.hough_circle(spot_edge, hough_radius)
+                accums, cx, cy, rad = transform.hough_circle_peaks(hough_res, hough_radius,
+                                                                   total_num_peaks=1)
+
+                if cx < ncols * 0.25 or cx > ncols * 0.75:
+                    cx = ncols * 0.5
+                    cy = nrows * 0.5
+                    rad = rad * 0.5
+                height = row - cy
+                width = col - cx
+                rad = rad - 25
+                print(cx,cy,rad)
+                disk_mask = (width**2 + height**2 > rad**2)
+
+                masker_3D(pic3D_masked, disk_mask)
+                masker_3D(pic3D, disk_mask)
+
+                pix_area = (pic3D[mid_pic] != pic3D[mid_pic].max()).sum()
+                pix_sz_micron = 5.86
+                mag = 40
+                if (nrows,ncols) == (1080,1072):
+                    pix_sz_micron = 3.45
+                    mag = 44
+                area_sqmm = round(((pix_area * (pix_sz_micron)**2) / mag**2)*1e-6, 6)
+                area_squm = int(area_sqmm * 1e6)
+
+                vis_blobs = blob_detect_3D(pic3D_masked, min_sig = 1, max_sig = 2.5, thresh = 0.08)
+
+                sdm_filter = 50 ###Make lower if edge particles are being detected
+                if mirror_toggle is True: sdm_filter = sdm_filter / (np.mean(mirror))
+
+                total_particles = particle_quant_3D(pic3D, vis_blobs, sdm_filter)
+                particle_df = pd.DataFrame(total_particles)
+                particle_df.rename(columns = {0:'y', 1:'x', 2:'r',
+                                              3:'z', 4:'pc', 5:'sdm'},
+                                              inplace = True)
+
+                rounding_cols = ['yx_5','yx_10','yx_10/5','yx_5/10','yx_ceil','yx_floor']
+                particle_df = dupe_finder(particle_df)
+                particle_df = dupe_dropper(particle_df, rounding_cols, sorting_col = 'pc')
+                particle_count = len(particle_df)
+                print("Unique particles counted: " + str(particle_count) +"\n")
+
+                particle_df.drop(rounding_cols, axis = 1, inplace = True)
+                if not os.path.exists('../virago_output/'+ chip_name + '/vcounts'):
+                    os.makedirs('../virago_output/' + chip_name + '/vcounts')
+                particle_df.to_csv('../virago_output/' + chip_name + '/vcounts/' + png + '.'
+                + str(area_squm) + '.vcount.csv', sep = ",")
+
+#---------------------------------------------------------------------------------------------#
+            ####Processed Image Renderer
+                pic_to_show = pic3D_rescale[5]
+                processed_image_viewer(pic_to_show, dpi, particle_df, cy, cx, rad)
+#---------------------------------------------------------------------------------------------*
             if passes_per_spot != pass_counter: print("Missing pgm files... ")
             spot += 1
 
         print(datetime.now() - startTime)
-
 #*********************************************************************************************#
 # CSV Reader
 #*********************************************************************************************#
