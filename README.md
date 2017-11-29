@@ -11,6 +11,8 @@ It is 3.23 GB in size, compressed as a 7zip archive. Most unarchivers should be 
 Once unpacked, you will find it consists mostly of portable graymaps, which are images of antibody spots covalently bound to the silica chip captured by the IRIS. 
 This chip (ID = tCHIP008) contains a grid-array of 6 different types of antibody, 3 of which recogize Ebola Virus (EBOV), and 3 that do not, serving as negative controls. More details about the chip can be found in the lone XML file within the archive.
 
+I should note that this dataset DOES CONTAIN VIRUSES, but the biological kind that will have no effect on your computer :P
+
 This particular experiment was performed on November 2, 2017.
 The experiment was performed over a course of about 30 minutes. During this time, saline solution containing a mostly-harmless EBOV mimic (VSV-EBOV) flowed over the surface of the chip at a rate of about 5 microliters per minute. 
 The VSV-EBOV was at a concentration of 1 x 10^6 PFU/mL (https://en.wikipedia.org/wiki/Plaque-forming_unit), a typical concentration for virological research.
