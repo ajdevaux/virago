@@ -9,6 +9,7 @@ import matplotlib.mlab as mlab
 from matplotlib import cm
 import pandas as pd
 import numpy as np
+import seaborn as sns
 from scipy import stats
 from skimage import exposure, feature, io, transform, filters
 import glob, os, json, sys, math, warnings
@@ -123,6 +124,7 @@ def masker_3D(im3D, disk_mask):
         image[disk_mask] = image.max()
 #*********************************************************************************************#
 def blob_detect_3D(im3D, min_sig, max_sig, thresh):
+    """This is the primary function for detecting "blobs" in the stack of IRIS images"""
     total_blobs = np.empty(shape = (0,4))
     for i, image in enumerate(im3D):
         blobs = feature.blob_dog(
@@ -780,8 +782,11 @@ if pgm_toggle.lower() in ('yes', 'y'):
                 merge_df = pd.merge(particle_df, fluor_df, how = 'inner', on = 'yx_ceil')
                 merge_df.drop(merging_cols_drop, axis = 1, inplace = True)
                 merge_df = merge_df[(merge_df.pc_x > 10) & (merge_df.pc_x < 50)]
-                print(merge_df)
                 print(len(merge_df))
+                merge_df.rename(columns = {'pc_x':'percent_contrast_vis',
+                                           'pc_y':'percent_contrast_fluor'},
+                                            inplace = True)
+
                 #     merge_df.append(merge_df2, ignore_index = True)
                 # print(merge_df)
 
@@ -799,19 +804,23 @@ if pgm_toggle.lower() in ('yes', 'y'):
                 # nonmatches = (merge_df.pc_y == 0).sum()
                 # print(nonmatches / len())
                 if len(merge_df) > 50:
-                    fig = plt.figure(figsize = (8,6), dpi = dpi)
-                    subplot = fig.add_subplot(111)
-                    subplot.scatter(merge_df.pc_x, merge_df.pc_y, c ='g', marker = '+', alpha = 0.5)
-                    fit = np.polyfit(merge_df.pc_x, merge_df.pc_y, 1)
-                    p = np.poly1d(fit)
-                    plt.plot(merge_df.pc_x, p(merge_df.pc_x), c = 'blue')
-                    print("y = %.6fx + (%.6f)" %(fit[0],fit[1]))
-                    subplot.set_xlabel("Visible Percent Contrast", color = 'k')
-                    subplot.set_ylabel("Fluorescent Percent Contrast", color = 'k')
-                    # plt.title = (png + ": Correlation of Visible Particle Size"
-                    #                  + "with Fluorescent Signal")
-                    plt.savefig('../virago_output/' + chip_name + '/' + png + "_fluor_scatter.png",
-                                bbox_inches = 'tight', pad_inches = 0.1, dpi = 300)
+                    # fig = plt.figure(figsize = (8,6), dpi = dpi)
+                    # subplot = fig.add_subplot(111)
+                    # subplot.scatter(merge_df.pc_x, merge_df.pc_y, c ='g', marker = '+', alpha = 0.5)
+                    # fit = np.polyfit(merge_df.pc_x, merge_df.pc_y, 1)
+                    # p = np.poly1d(fit)
+                    # plt.plot(merge_df.pc_x, p(merge_df.pc_x), c = 'blue')
+                    # print("y = %.6fx + (%.6f)" %(fit[0],fit[1]))
+                    # subplot.set_xlabel("Visible Percent Contrast", color = 'k')
+                    # subplot.set_ylabel("Fluorescent Percent Contrast", color = 'k')
+                    # # plt.title = (png + ": Correlation of Visible Particle Size"
+                    # #                  + "with Fluorescent Signal")
+
+                    sns_plot = sns.jointplot(x = "percent_contrast_vis", y = "percent_contrast_fluor",
+                                  data = merge_df, kind = "reg", color = "green")
+                    sns_plot.savefig('../virago_output/' + chip_name + '/'
+                                     + png + "_fluor_scatter.png",
+                                     bbox_inches = 'tight', pad_inches = 0.1, dpi = 300)
                     plt.show()
                     plt.clf(); plt.close('all')
 #---------------------------------------------------------------------------------------------#
