@@ -126,7 +126,7 @@ def masker_3D(im3D, disk_mask):
 def blob_detect_3D(im3D, min_sig, max_sig, thresh):
     """This is the primary function for detecting "blobs" in the stack of IRIS images"""
     total_blobs = np.empty(shape = (0,4))
-    for i, image in enumerate(im3D):
+    for plane, image in enumerate(im3D):
         blobs = feature.blob_dog(
                                  image, min_sigma = min_sig, max_sigma = max_sig,
                                  threshold = thresh, overlap = 0
@@ -137,10 +137,10 @@ def blob_detect_3D(im3D, min_sig, max_sig, thresh):
             blobs = np.zeros(shape = (1,4))
             #print(blobs.shape)
         else:
-            z_arr = np.full((len(blobs),1),i)
+            z_arr = np.full((len(blobs),1), plane+1)
             blobs = np.append(blobs,z_arr, axis = 1)
         total_blobs = np.append(total_blobs, blobs, axis = 0)
-        print("Image scanned: " + png + "-Slice " + str(i))
+        print("Image scanned: " + png + "-Slice " + str(plane+1))
 
     return total_blobs
 #*********************************************************************************************#
@@ -223,7 +223,7 @@ def processed_image_viewer(image, dpi, particle_df, cy, cx, rad):
                   linewidth=5, fill=False, alpha = 0.5)
     axes.add_patch(ab_spot)
 
-    z_list = [int(z) for z in list(set(particle_df.z))]
+    z_list = [int(z+1) for z in list(set(particle_df.z))]
 
     dark_red = (0.645, 0, 0.148); pale_yellow = (0.996, 0.996, 0.746)
     pale_blue = (0.875, 0.949, 0.969); dark_blue = (0.191, 0.211, 0.582)
@@ -238,9 +238,13 @@ def processed_image_viewer(image, dpi, particle_df, cy, cx, rad):
         y = particle_df.loc[particle_df.z == zslice].y.reset_index(drop = True)
         x = particle_df.loc[particle_df.z == zslice].x.reset_index(drop = True)
         pc = particle_df.loc[particle_df.z == zslice].pc.reset_index(drop = True)
-        if max(pc) > hist_max: hist_max = max(pc)
+        try:
+            if max(pc) > hist_max: hist_max = max(pc)
+        except: ValueError
         crad = 2.5
-        if max(pc) > 25: crad = 0.25
+        try:
+            if max(pc) > 25: crad = 0.25
+        except: ValueError
         pc_hist.append(np.array(pc))
         for i in range(0,len(pc)):
             point = plt.Circle((x[i], y[i]), pc[i] * crad,
@@ -257,7 +261,9 @@ def processed_image_viewer(image, dpi, particle_df, cy, cx, rad):
     ax_hist.patch.set_facecolor('black')
     ax_hist.legend(loc = 'best')
 
-    if math.ceil(np.median(pc)) > 6: hist_x_axis = math.ceil(np.median(pc)*2.5)
+    try:
+        if math.ceil(np.median(pc)) > 6: hist_x_axis = math.ceil(np.median(pc)*2.5)
+    except: ValueError
     else: hist_x_axis = 6
     if hist_max > 50: ax_hist.set_xlim([0,50])
     else: ax_hist.set_xlim([0,np.ceil(hist_max)])
@@ -484,7 +490,7 @@ if mirror_file:
     mirror_toggle = True
 else: print("Mirror file absent"); mirror_toggle = False
 
-#zslice_count = max([int(pgmfile.split(".")[3]) for pgmfile in pgm_list])
+zslice_count = max([int(pgmfile.split(".")[3]) for pgmfile in pgm_list])
 txtcheck = [file.split(".") for file in txt_list]
 iris_txt = [".".join(file) for file in txtcheck if (len(file) >= 3) and (file[2].isalpha())]
 nv_txt = [".".join(file) for file in txtcheck if (len(file) > 3) and (file[2].isdigit())]
@@ -524,7 +530,7 @@ if not os.path.exists('../virago_output/'+ chip_name): os.makedirs('../virago_ou
 ##Varibles
 averaged_data = []
 normalized_density = ([])
-spot_labels, spot_set = [], set()
+spot_labels = []
 # hist_dict = {}
 #*********************************************************************************************#
 # Text file Parser
@@ -545,7 +551,10 @@ for txtfile in iris_txt:
 
     txtdata = pd.read_table(txtfile, sep = ':', error_bad_lines = False,
                             header = None, index_col = 0, usecols = [0, 1])
-    pass_labels = [row for row in txtdata.index if row.startswith('pass_time')]
+    pass_labels = [
+                    row for row in txtdata.index
+                    if row.startswith('pass_time')
+                    ]
     if not nv_txt: pass_counter = int(len(pass_labels)) ##If nanoViewer hasn't run on data
 
     spot_idxs = pd.Series(list(txtdata.loc['spot_index']) * pass_counter)
@@ -584,8 +593,11 @@ spot_data_nv.scan_time.replace(0, np.nan, inplace = True)
 
 spot_labels = [[val]*(pass_counter) for val in mAb_dict.values()]
 
-[spot_set.add(val) for val in mAb_dict.values()]
-spot_set = list(spot_set)
+# [spot_set.add(val) for val in mAb_dict.values()]
+# spot_set = list(spot_set)
+spot_set = []
+for val in mAb_dict.values():
+    if val not in spot_set: spot_set.append(val)
 #*********************************************************************************************#
 # PGM Scanning
 spot_to_scan = 1 ##Change this.......... to only scan certain spots
@@ -606,6 +618,20 @@ if pgm_toggle.lower() in ('yes', 'y'):
                                     if int(file.split(".")[1]) == spot_to_scan])
         passes_per_spot = len(pass_per_spot_list)
         scan_range = range(0,passes_per_spot,1)
+        if passes_per_spot != pass_counter:
+            print("Missing pgm files... ")
+            if not os.path.exists('../virago_output/'+ chip_name + '/vcounts'):
+                os.makedirs('../virago_output/' + chip_name + '/vcounts')
+            scans_counted = [int(file.split(".")[-1]) for file in pass_per_spot_list]
+            scan_set = set(range(1,pass_counter+1))
+            missing_df = pd.DataFrame(np.zeros(shape = (1,6)),
+                                 columns = ['y', 'x', 'r','z', 'pc', 'sdm'])
+            missing_csvs = scan_set.difference(scans_counted)
+            for item in missing_csvs:
+                missing_scan = png[:-1] + str(item)
+                missing_df.to_csv('../virago_output/' + chip_name + '/vcounts/'
+                                   + missing_scan + '.0.vcount.csv', sep = ",")
+
         spot_to_scan += 1
         for x in scan_range:
             scan_list = [file for file in pgm_list if file.startswith(pass_per_spot_list[x])]
@@ -659,7 +685,7 @@ if pgm_toggle.lower() in ('yes', 'y'):
             masker_3D(pic3D_masked, disk_mask)
             masker_3D(pic3D_orig, disk_mask)
 
-            pix_area = (pic3D[mid_pic] != pic3D[mid_pic].max()).sum()
+            pix_area = (ncols * nrows) - np.count_nonzero(disk_mask)
             pix_sz_micron = 5.86
             mag = 40
             if (nrows,ncols) == (1080,1072):
@@ -674,10 +700,8 @@ if pgm_toggle.lower() in ('yes', 'y'):
             #if mirror_toggle is True: sdm_filter = sdm_filter / (np.mean(mirror))
 
             total_particles = particle_quant_3D(pic3D_orig, vis_blobs, sdm_filter)
-            particle_df = pd.DataFrame(total_particles)
-            particle_df.rename(columns = {0:'y', 1:'x', 2:'r',
-                                          3:'z', 4:'pc', 5:'sdm'},
-                                          inplace = True)
+            particle_df = pd.DataFrame(total_particles, columns = ['y', 'x', 'r',
+                                                                   'z', 'pc', 'sdm'])
 
 
             particle_df = dupe_finder(particle_df)
@@ -686,7 +710,7 @@ if pgm_toggle.lower() in ('yes', 'y'):
             particle_count = len(particle_df)
             print("\nUnique particles counted: " + str(particle_count) +"\n")
 
-            #particle_df.drop(rounding_cols, axis = 1, inplace = True)
+
             if not os.path.exists('../virago_output/'+ chip_name + '/vcounts'):
                 os.makedirs('../virago_output/' + chip_name + '/vcounts')
             particle_df.to_csv('../virago_output/' + chip_name + '/vcounts/' + png + '.'
@@ -730,10 +754,9 @@ if pgm_toggle.lower() in ('yes', 'y'):
 
                 fluor_particles = particle_quant_3D(fluor3D_orig, fluor_blobs, sdm_filter)
 
-                fluor_df = pd.DataFrame(fluor_particles)
-                fluor_df.rename(columns = {0:'y', 1:'x', 2:'r',
-                                              3:'z', 4:'pc', 5:'sdm'},
-                                              inplace = True)
+                fluor_df = pd.DataFrame(fluor_particles,columns = ['y', 'x', 'r',
+                                                                   'z', 'pc', 'sdm'])
+
                 fluor_df.z.replace(to_replace = 1, value = 'A', inplace = True)
                 #print
                 print("\nFluorescent particles counted: " + str(len(fluor_df)) +"\n")
@@ -781,8 +804,7 @@ if pgm_toggle.lower() in ('yes', 'y'):
                 #for column in rounding_cols:
                 merge_df = pd.merge(particle_df, fluor_df, how = 'inner', on = 'yx_ceil')
                 merge_df.drop(merging_cols_drop, axis = 1, inplace = True)
-                merge_df = merge_df[(merge_df.pc_x > 10) & (merge_df.pc_x < 50)]
-                print(len(merge_df))
+                merge_df = merge_df[(merge_df.pc_x > 10) & (merge_df.pc_x < 30)]
                 merge_df.rename(columns = {'pc_x':'percent_contrast_vis',
                                            'pc_y':'percent_contrast_fluor'},
                                             inplace = True)
@@ -830,68 +852,70 @@ if pgm_toggle.lower() in ('yes', 'y'):
             pic_to_show = pic3D_rescale[high_count]
             processed_image_viewer(pic_to_show, dpi, particle_df, cy, cx, rad)
 #---------------------------------------------------------------------------------------------#
+            particle_df.drop(rounding_cols, axis = 1, inplace = True)
 
-            if passes_per_spot != pass_counter: print("Missing pgm files... ")
+
+
 
         print("Time to scan PGMs: " + str(datetime.now() - startTime))
 #*********************************************************************************************#
 # CSV Reader
 #*********************************************************************************************#
-def csv_fixer(csv_list, txtcheck, vir_toggle):
-    csvcheck = set([(".".join(file[:-1])+'.csv') for file in txtcheck if (len(file) > 2)
-                    and (file[2].isdigit())])
-    miss_csv = list(csvcheck.difference(csv_list))
-    blank_csv = np.array([[1,0,0,0,0,1]])
-    for csv in miss_csv:
-        if vir_toggle is True:
-            vcount_str = '.0.vcount'
-            csv = csv.split(".")
-            csv = ".".join(csv[:3]) + vcount_str + '.csv'
-        print("Missing particle data... Generating blank: ", csv)
-        np.savetxt(csv, blank_csv, delimiter=",", fmt=('%i','%i','%i','%i','%i','%i'))
-    csv_list = sorted(glob.glob('*.csv'))
-    return csv_list
-
-csv_list = csv_fixer(csv_list,txtcheck, vir_toggle = False)
-
-olddata_toggle = 'no'
-if os.path.exists('../virago_output/' + chip_name + '/' + chip_name + '_spot_data_nv.csv'):
-    olddata_toggle = input("\nPre-existing data exists. Do you want use this data? (y/n)\n"
-        "NOTE: Selecting 'no' will overwrite old data)\t")
-    assert isinstance(olddata_toggle, str)
-    if olddata_toggle.lower() in ('yes', 'y'):
-        ##This reads in the pre-existing data files and stores the needed variables
-        print("\nUsing pre-existing data...\n")
-        preexist_csv = '../virago_output/' + chip_name + '/' + chip_name + '_spot_data_nv.csv'
-        spot_data_nv = pd.read_table(preexist_csv, sep = ',', error_bad_lines = False)
-        count_info = [col for col in spot_data_nv.columns if col.startswith('particle_count')]
-        count_info = str(count_info).split("_")
-        min_corr = float(count_info[2])
-        contrast_window = count_info[3:5]
-        print(str(contrast_window[0])+"-"+contrast_window[1])
-        min_corr_str = str("%.2F" % min_corr)
-        print("Correlation value is: "+ min_corr_str +" or greater\n")
-        with open('../virago_output/' + chip_name + '/'
-            + chip_name + '_particle_dict_'
-            + min_corr_str + 'corr.txt', 'r') as infile:
-            particle_dict = json.load(infile)
-    elif olddata_toggle.lower() in ('no', 'n'):
-        print("")
-        min_corr, spot_data_nv, particle_dict, contrast_window = nano_csv_reader(chip_name, spot_data_nv, csv_list)
-else:
-    min_corr, spot_data_nv, particle_dict, contrast_window = nano_csv_reader(chip_name, spot_data_nv, csv_list)
-
-min_corr_str = str("%.2F" % min_corr)
+# def csv_fixer(csv_list, txtcheck, vir_toggle):
+#     csvcheck = set([(".".join(file[:-1])+'.csv') for file in txtcheck if (len(file) > 2)
+#                     and (file[2].isdigit())])
+#     miss_csv = list(csvcheck.difference(csv_list))
+#     blank_csv = np.array([[1,0,0,0,0,1]])
+#     for csv in miss_csv:
+#         if vir_toggle is True:
+#             vcount_str = '.0.vcount'
+#             csv = csv.split(".")
+#             csv = ".".join(csv[:3]) + vcount_str + '.csv'
+#         print("Missing particle data... Generating blank: ", csv)
+#         np.savetxt(csv, blank_csv, delimiter=",", fmt=('%i','%i','%i','%i','%i','%i'))
+#     csv_list = sorted(glob.glob('*.csv'))
+#     return csv_list
+#
+# csv_list = csv_fixer(csv_list,txtcheck, vir_toggle = False)
+#
+# olddata_toggle = 'no'
+# if os.path.exists('../virago_output/' + chip_name + '/' + chip_name + '_spot_data_nv.csv'):
+#     olddata_toggle = input("\nPre-existing data exists. Do you want use this data? (y/n)\n"
+#         "NOTE: Selecting 'no' will overwrite old data)\t")
+#     assert isinstance(olddata_toggle, str)
+#     if olddata_toggle.lower() in ('yes', 'y'):
+#         ##This reads in the pre-existing data files and stores the needed variables
+#         print("\nUsing pre-existing data...\n")
+#         preexist_csv = '../virago_output/' + chip_name + '/' + chip_name + '_spot_data_nv.csv'
+#         spot_data_nv = pd.read_table(preexist_csv, sep = ',', error_bad_lines = False)
+#         count_info = [col for col in spot_data_nv.columns if col.startswith('particle_count')]
+#         count_info = str(count_info).split("_")
+#         min_corr = float(count_info[2])
+#         contrast_window = count_info[3:5]
+#         print(str(contrast_window[0])+"-"+contrast_window[1])
+#         min_corr_str = str("%.2F" % min_corr)
+#         print("Correlation value is: "+ min_corr_str +" or greater\n")
+#         with open('../virago_output/' + chip_name + '/'
+#             + chip_name + '_particle_dict_'
+#             + min_corr_str + 'corr.txt', 'r') as infile:
+#             particle_dict = json.load(infile)
+#     elif olddata_toggle.lower() in ('no', 'n'):
+#         print("")
+#         min_corr, spot_data_nv, particle_dict, contrast_window = nano_csv_reader(chip_name, spot_data_nv, csv_list)
+# else:
+#     min_corr, spot_data_nv, particle_dict, contrast_window = nano_csv_reader(chip_name, spot_data_nv, csv_list)
+#
+# min_corr_str = str("%.2F" % min_corr)
 if not os.path.exists('../virago_output/'+ chip_name + '/vcounts'):
     os.makedirs('../virago_output/' + chip_name + '/vcounts')
 os.chdir('../virago_output/'+ chip_name + '/vcounts')
 vir_csv_list = sorted(glob.glob(chip_name +'*.vcount.csv'))
-if pgm_toggle is True:
-    vir_csv_list = [".".join(csv.split(".")[:3])+'.csv' for csv in vir_csv_list]
-    vir_csv_list = csv_fixer(vir_csv_list,txtcheck, vir_toggle = True)
+# if pgm_toggle is True:
+#     vir_csv_list = [".".join(csv.split(".")[:3])+'.csv' for csv in vir_csv_list]
+#     vir_csv_list = csv_fixer(vir_csv_list,txtcheck, vir_toggle = True)
 #os.chdir(iris_path.strip('"'))
 
-if len(vir_csv_list) == (len(txt_list) - spot_counter):
+if len(vir_csv_list) == (len(iris_txt) * pass_counter):
     particle_count_vir, contrast_window, particle_dict = virago_csv_reader(chip_name, vir_csv_list, vir_toggle = True)
 
     area_list = np.array([(float(csvfile.split(".")[-3]) / 1e6) for csvfile in vir_csv_list])
