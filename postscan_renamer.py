@@ -7,8 +7,11 @@ os.chdir(iris_path.strip('"'))
 
 all_files = sorted(glob.glob('*.*'))
 print("There are " + str(len(all_files)) + " files.")
-files_to_rename = [file for file in all_files if file.split(".")[2].isdigit()]
-print(files_to_rename "\n")
+files_to_rename = [file for file in all_files if (file.split(".")[2].isdigit())]
+mirror_file = str(glob.glob('*000.pgm')).strip("'[]'")
+if mirror_file:
+    files_to_rename.remove(mirror_file)
+print(files_to_rename)
 toggle = input("OK to rename " + str(len(files_to_rename)) + " files? (y/[n])")
 if toggle in ("y", "yes"):
     new_names = []
@@ -23,8 +26,8 @@ if toggle in ("y", "yes"):
     for x in files_to_rename:
         os.rename(files_to_rename[i],new_names[i])
         i += 1
-        
-else: exit()
+
+else: exit
 
 
 
