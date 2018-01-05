@@ -56,7 +56,7 @@ if nv_txt: pass_counter = max([int(file[2]) for file in txtcheck if (len(file) >
 xml_file = [file for file in xml_list if chip_name in file]
 chip_file = ebc.chip_file_reader(xml_file[0])
 
-mAb_dict = ebc.dejargonifier(chip_file)
+mAb_dict, mAb_dict_rev = ebc.dejargonifier(chip_file)
 spot_counter = len([key for key in mAb_dict])##Important
 
 sample_name = input("\nPlease enter a sample descriptor (e.g. VSV-MARV@1E6 PFU/mL)\n")
@@ -191,26 +191,27 @@ while spot_to_scan <= spot_counter:
         pic3D_clahe = ebc.clahe_3D(pic3D_norm)
 
         pic3D_rescale = ebc.rescale_3D(pic3D_clahe)
-        pic3D_masked = pic3D_rescale.copy()
 
         if zslice_count > 1: mid_pic = int(np.ceil(zslice_count/2))
         else: mid_pic = 0
 
         operative_pic = pic3D_rescale[mid_pic]
+        measurement_pic = pic3D_orig[mid_pic]
 
-        xyr, pic_canny = ebc.spot_finder(operative_pic, canny_sig = 3, oob = False)
+        xyr, pic_canny = ebc.spot_finder(operative_pic, canny_sig = 2, oob = False)
 
         width = col - xyr[0]
         height = row - xyr[1]
-        rad = xyr[2] - 120
-        fibrin_disk_mask = (width**2 + height**2 > (rad)**2)
+        rad = xyr[2] - 20
+        filo_disk_mask = (width**2 + height**2 > (rad)**2)
         xyr_fbg = (xyr[0], xyr[1], rad)
 
         figsize = (ncols/dpi, nrows/dpi)
 
-        masked_pic_oper = np.ma.array(operative_pic, mask = fibrin_disk_mask + marker_mask)
-        # masked_pic_orig = np.ma.array(pic3D_orig[mid_pic], mask = (filo_disk_mask + marker_mask))
-        pix_area = np.ma.count(masked_pic_oper)
+        masked_pic_oper = np.ma.array(operative_pic, mask = filo_disk_mask + marker_mask)
+        masked_pic_orig = np.ma.array(pic3D_orig[mid_pic], mask = (filo_disk_mask + marker_mask))
+
+        pix_area = np.ma.count(masked_pic_orig)
         if (nrows,ncols) == (1080,1072):
             cam_micron_per_pix = 3.45
             mag = 44
@@ -219,40 +220,40 @@ while spot_to_scan <= spot_counter:
             cam_micron_per_pix = 5.86
             mag = 40
         pix_per_micron = mag/cam_micron_per_pix
+
         area_sqmm = round(((pix_area * cam_micron_per_pix**2) / mag**2)*1e-6, 6)
-
         area_list.append(area_sqmm)
-        print(area_list)
 #---------------------------------------------------------------------------------------------#
-        ###FOR FIBRIN###
-
+        ###FOR FILAMENTOUS PARTICLES###
         # thresh = filters.threshold_yen(operative_pic)
-        thresh = np.ma.median(masked_pic_oper)+0.12
+        spot_median = np.ma.median(masked_pic_orig)
+        thresh = np.ma.median(masked_pic_oper) + 0.3
+
         print("\nThreshold = " + str(thresh) + "\n")
 
         plt.xticks(np.arange(0,1.2,0.2), size = 10)
         plt.axvline(thresh, color = 'r')
-        sns.distplot(operative_pic.ravel(), kde = False, norm_hist = True)
+        sns.distplot(masked_pic_oper.ravel(), kde = False, norm_hist = True)
 
         pic_binary = (operative_pic > thresh).astype(int)
-        pic_binary[fibrin_disk_mask] = 0
+        pic_binary[filo_disk_mask] = 0
         pic_binary[marker_mask] = 0
         pic_skel = morphology.skeletonize(pic_binary)
         pic_skel_labelled, labels = measure.label(pic_skel,
                                                   return_num = True,
                                                   connectivity = 2)
         regionprops = measure.regionprops(pic_skel_labelled, operative_pic)
-        coords_dict = {}
-        label_list, pixel_ct, centroid_list, intensity_list = [],[],[],[]
+        coords_dict, bbox_dict = {},{}
+        label_list, pixel_ct, centroid_list = [],[],[]
         for region in regionprops:
-            if (region['area'] > 4) & (region['area'] < 500):
+            if (region['area'] > 4) & (region['area'] < 2500):
                 coords_dict[region['label']] = region['coords']
+                bbox_dict[region['label']] = region['bbox']
                 label_list.append(region['label'])
                 pixel_ct.append(region['area'])
                 centroid_list.append(region['centroid'])
-                # intensity_list.append(region['mean_intensity'])
 
-        fiber_lengths, vertex1, vertex2 = [],[],[]
+        fiber_lengths, vertex1, vertex2, filo_perc_contrast_list = [],[],[],[]
         for key in sorted(coords_dict):
             fiber_coords = coords_dict[key]
             dist_matrix = pdist(fiber_coords, metric='cityblock')
@@ -260,7 +261,6 @@ while spot_to_scan <= spot_counter:
             distances, preds = csgraph.shortest_path(sparse_matrix,
                                                      method = 'FW',
                                                      return_predecessors=True)
-
             ls_path = np.max(distances)
             farpoints = np.where(distances == ls_path)
             endpt_loc = len(farpoints[0]) // 2
@@ -271,6 +271,12 @@ while spot_to_scan <= spot_counter:
             vertex1.append(tuple(v1))
             vertex2.append(tuple(v2))
 
+            intensity = np.mean([measurement_pic[coords[0],coords[1]]
+                                for coords in fiber_coords])
+
+            filo_pc = intensity / (intensity - spot_median)*100 / spot_median
+            filo_perc_contrast_list.append(filo_pc)
+
         fiber_df = pd.DataFrame()
         fiber_df['label'] = label_list
         fiber_df['pixels'] = pixel_ct
@@ -278,25 +284,24 @@ while spot_to_scan <= spot_counter:
         fiber_df['vertex1'] = vertex1
         fiber_df['vertex2'] = vertex2
         fiber_df['centroid'] = centroid_list
-        # fiber_df['mean_intensity'] = intensity_list
+        fiber_df['filo_pc'] = filo_perc_contrast_list
 
         if not os.path.exists('../virago_output/'+ chip_name + '/fcounts'):
             os.makedirs('../virago_output/' + chip_name + '/fcounts')
         fiber_df.to_csv('../virago_output/' + chip_name + '/fcounts/' + png + '.fcount.csv')
 
-
         for row in fiber_df.iterrows():
             pic_skel_labelled[np.where(pic_skel_labelled == row[1][0])] = (row[1][2]*1000)
 
-        fib_short = len(fiber_df[fiber_df.fiber_length_um < 7.5])
+        fib_short = len(fiber_df[fiber_df.fiber_length_um < 1.5])
         fib_short_list.append(fib_short)
-        # fib_med = len(fiber_df[(fiber_df.fiber_length_um >= 2.5)&(fiber_df.fiber_length_um < 7.5)])
-        # fib_med_list.append(fib_med)
-        fib_long = len(fiber_df[fiber_df.fiber_length_um >= 7.5])
+        fib_med = len(fiber_df[(fiber_df.fiber_length_um >= 1.5)&(fiber_df.fiber_length_um < 4.5)])
+        fib_med_list.append(fib_med)
+        fib_long = len(fiber_df[fiber_df.fiber_length_um >= 4.5])
         fib_long_list.append(fib_long)
 #---------------------------------------------------------------------------------------------#
     ####Processed Image Renderer
-        pic_to_show = operative_pic
+        pic_to_show = pic_skel
         ebc.processed_image_viewer(image = pic_to_show,
                                    DFrame = fiber_df,
                                    cmap = 'gray',
@@ -306,8 +311,7 @@ while spot_to_scan <= spot_counter:
                                    chip_name = chip_name,
                                    im_name = png,
                                    show_particles = False,
-                                   show_fibers = False,
-                                   show_scalebar = True,
+                                   show_fibers = True,
                                    show_markers = True,
                                    scale = 15)
 #---------------------------------------------------------------------------------------------#
@@ -315,20 +319,7 @@ while spot_to_scan <= spot_counter:
 
 spot_data_fbg['area_sqmm'] = area_list
 spot_data_fbg['fibers_short'] = fib_short_list
-# spot_data_fbg['fibers_med'] = fib_med_list
+spot_data_fbg['fibers_med'] = fib_med_list
 spot_data_fbg['fibers_long'] = fib_long_list
 
 spot_data_fbg.to_csv('../virago_output/' + chip_name +'/' + chip_name + '_spot_data_fbg.csv')
-
-fira_csv_list = sorted(glob.glob('../virago_output/' + chip_name +'/' + '*.fcount.csv'))
-prescan_csvs = [csv for csv in fira_csv_list if int(csv.split(".")[2]) == 1]
-postscan_csvs = [csv for csv in fira_csv_list if int(csv.split(".")[2]) == 2]
-plasmin_csvs = [csv for csv in fira_csv_list if int(csv.split(".")[2]) == 3]
-
-violin_df = pd.DataFrame()
-for csvfile in prescan_csvs:
-    csv_data = pd.read_table(
-                         csvfile, sep = ',',
-                         error_bad_lines = False, usecols = ['fiber_length_um'])
-    violin_df = pd.concat([violin_df, csv_data], axis = 0)
-sns.violinplot(y=violin_df['fiber_length_um'])

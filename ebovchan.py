@@ -9,7 +9,6 @@ import numpy as np
 import seaborn as sns
 from skimage import exposure, feature, transform, filters
 import os, json, math, warnings
-
 #*********************************************************************************************#
 #
 #           FUNCTIONS
@@ -122,7 +121,7 @@ def rescale_3D(im3D):
         im3D_rescale[plane] = exposure.rescale_intensity(image, in_range=(p1,p2))
     return im3D_rescale
 #*********************************************************************************************#
-def spot_finder(im, canny_sig = 2, oob = True):
+def spot_finder(im, canny_sig = 2):
     """Locates the antibody spot convalently bound to the SiO2 substrate
     where particles of interest should be accumulating"""
     nrows, ncols = im.shape
@@ -131,13 +130,13 @@ def spot_finder(im, canny_sig = 2, oob = True):
     hough_res = transform.hough_circle(pic_canny, hough_radius)
     accums, cx, cy, rad = transform.hough_circle_peaks(hough_res, hough_radius,
                                                    total_num_peaks=1)
-    if oob == True:
-        if cx < ncols * 0.25 or cx > ncols * 0.75:
-            cx = ncols * 0.5
-            cy = nrows * 0.5
-            rad = rad * 0.5
+    # if oob == True:
+    #     if cx < ncols * 0.25 or cx > ncols * 0.75:
+    #         cx = ncols * 0.5
+    #         cy = nrows * 0.5
+    #         rad = rad * 0.5
 
-    xyr = (cx, cy, rad)
+    xyr = tuple((int(cx), int(cy), int(rad)))
     print(xyr)
     return xyr, pic_canny
 #*********************************************************************************************#
@@ -150,24 +149,33 @@ def masker_3D(im3D, disk_mask):
         image[:,0:border_mask], image[:,-(border_mask):] = image.max(), image.max()
         image[disk_mask] = image.max()
 #*********************************************************************************************#
-def blob_detect_3D(im3D, min_sig, max_sig, thresh, im_name = ""):
+def better_masker_3D(pic3D, mask):
+    pic3D_masked = np.ma.empty_like(pic3D)
+    for plane, pic in enumerate(pic3D):
+        pic3D_masked[plane] = np.ma.array(pic, mask = mask)
+        # print(pic3D_masked[plane])
+        # ebc.view_pic(pic3D_masked[plane])
+    return pic3D_masked
+
+
+#*********************************************************************************************#
+def blob_detect_3D(im3D, min_sig, max_sig, thresh, mask, im_name = ""):
     """This is the primary function for detecting "blobs" in the stack of IRIS images.
     Uses the Difference of Gaussians algorithm"""
     total_blobs = np.empty(shape = (0,4))
     for plane, image in enumerate(im3D):
-        blobs = feature.blob_dog(
-                                 image, min_sigma = min_sig, max_sigma = max_sig,
+        blobs = feature.blob_dog(image, min_sigma = min_sig, max_sigma = max_sig,
                                  threshold = thresh, overlap = 0
-                                ) ## Difference of Gaussians algorithm
+                                )
         blobs[:,2] = blobs[:,2]*math.sqrt(2)
         if len(blobs) == 0:
             print("No blobs here")
             blobs = np.zeros(shape = (1,4))
-            #print(blobs.shape)
         else:
-            z_arr = np.full((len(blobs),1), plane+1)
+            z_arr = np.full((len(blobs),1), int(plane+1))
             blobs = np.append(blobs,z_arr, axis = 1)
         total_blobs = np.append(total_blobs, blobs, axis = 0)
+        total_blobs = total_blobs.astype(int, copy = False)
         print("Image scanned: " + im_name + "-Slice " + str(plane+1))
 
     return total_blobs
@@ -176,33 +184,39 @@ def particle_quant_3D(im3D, d_blobs, sdm_filter):
     """This measures the percent contrast for every detected blob in the stack
     and filters out blobs that are on edges by setting a cutoff for standard deviation of the mean
      for measured background intensity. Blobs are now considered "particles" """
-    particle_array = np.empty(shape = (0,6))
-    perc_contrast, bg_lum_sdm, zslice_list = [],[],[]
+    perc_contrast, std_background = [],[]
+    particle_df = pd.DataFrame
+    med_list = [np.ma.median(image) for image in im3D]
     for i, blob in enumerate(d_blobs):
-        y,x,r,z = d_blobs[i]
-        y = int(y); x = int(x); z = int(z-1); r = int(math.ceil(r))
-        point_lum = im3D[ z , y , x ]
-        bg = im3D[ z , y-(r):y+(r+1) , x-(r):x+(r+1) ]
+        y,x,r,z_name = d_blobs[i]
+        y = int(y); x = int(x); z_loc = int(z_name-1) ; r = int(math.ceil(r))
 
-        try: bg_circ = np.hstack([bg[0,1:-1],bg[:,0],bg[-1,1:-1],bg[:,-1]])
+        point_lum = im3D[ z_loc , int(y) , x ]
+        local = im3D[ z_loc , y-(r):y+(r+1) , x-(r):x+(r+1) ]
+
+        try: local_circ = np.hstack([local[0,1:-1],local[:,0],local[-1,1:-1],local[:,-1]])
         except IndexError:
-            bg = np.full([r+1,r+1], point_lum)
-            bg_circ = np.hstack([bg[0,1:-1],bg[:,0],bg[-1,1:-1],bg[:,-1]])
+            local = np.full([r+1,r+1], point_lum)
+            local_circ = np.hstack([local[0,1:-1],local[:,0],local[-1,1:-1],local[:,-1]])
 
-        bg_lum_avg = np.mean(bg_circ)
-        bg_lum_sdm_pt = np.std(bg_circ) / math.sqrt(len(bg_circ))
+        median_bg = np.median(local_circ)
+        std_bg = np.std(local_circ)
+            # if std_bg 
 
-        perc_contrast_pt = ((point_lum - bg_lum_avg) * 100) / bg_lum_avg
-        perc_contrast.append([perc_contrast_pt])
-        bg_lum_sdm.append([bg_lum_sdm_pt])
-
+        perc_contrast_pt = ((point_lum - median_bg) * 100) / median_bg
+        perc_contrast.append(perc_contrast_pt)
+        std_background.append(std_bg)
+        # bg_lum_sdm.append([bg_lum_sdm_pt])
+        # point_df = pd.DataFrame([[y,x,r,z_name,perc_contrast_pt]])
+        # particle_df = particle_df.append(point_df, ignore_index=True)
+        # print(point_df)
+    print(std_background)
     d_blobs = np.append(d_blobs, np.asarray(perc_contrast), axis = 1)
-    d_blobs = np.append(d_blobs, np.asarray(bg_lum_sdm), axis = 1)
-    #print(d_blobs)
-    particles = d_blobs[(d_blobs[:,5] < sdm_filter) & (d_blobs[:,4] > 0)]
-    if len(particles) == 0: particles = [[0,0,0,0,0,0]]
-    #print("\nImage stack scanned: ")# + str(pgm))
-    #print("Particles in image: " + str(len(particles)) + "\n")
+    # d_blobs = np.append(d_blobs, np.asarray(bg_lum_sdm), axis = 1)
+    particles = d_blobs[d_blobs[:,4] > 0]
+    if len(particles) == 0: particles = [[0,0,0,0,0]]
+    # print(particles)
+    # print(particle_df)
     return particles
 #*********************************************************************************************#
 def dupe_finder(DFrame):
@@ -246,7 +260,7 @@ def color_mixer(zlen,c1,c2,c3,c4):
         color_list = ['white']
     return color_list
 #*********************************************************************************************#
-def circle_particles(DFrame):
+def circle_particles(DFrame, axes):
     z_list = [z for z in list(set(DFrame.z))]# if str(z).isdigit()]
     zlen = len(z_list)
     dark_red = (0.645, 0, 0.148); pale_yellow = (0.996, 0.996, 0.746)
@@ -282,13 +296,13 @@ def circle_particles(DFrame):
     ax_hist.patch.set_alpha(0.5)
     ax_hist.patch.set_facecolor('black')
     ax_hist.legend(loc = 'best')
-
-    try:
-        if math.ceil(np.median(pc)) > 6: hist_x_axis = math.ceil(np.median(pc)*2.5)
-    except: ValueError
-    else: hist_x_axis = 6
-    if hist_max > 50: ax_hist.set_xlim([0,50])
-    else: ax_hist.set_xlim([0,np.ceil(hist_max)])
+    ax_hist.set_xlim([0,10])
+    # try:
+    #     if math.ceil(np.median(pc)) > 6: hist_x_axis = math.ceil(np.median(pc)*2.5)
+    # except: ValueError
+    # else: hist_x_axis = 6
+    # if hist_max > 50:
+    # else: ax_hist.set_xlim([0,np.ceil(hist_max)])
 
     for spine in ax_hist.spines: ax_hist.spines[spine].set_color('k')
     ax_hist.tick_params(color = 'k')
@@ -301,7 +315,8 @@ def processed_image_viewer(image, DFrame, spot_coords, res,
                             cmap = 'gray', dpi = 96, markers = [],
                             chip_name = "", im_name = "",
                             show_particles = True, show_fibers = False,
-                            show_markers = True, scale = 10):
+                            show_markers = True, show_scalebar = True,
+                            show_image = True, scale = 10):
     """Generates a full-resolution PNG image after, highlighting features, showing counted particles,
     and a particle contrast histogram"""
     nrows, ncols = image.shape
@@ -316,21 +331,21 @@ def processed_image_viewer(image, DFrame, spot_coords, res,
     ab_spot = plt.Circle((cx, cy), rad, color='#5A81BB',
                   linewidth=5, fill=False, alpha = 0.5)
     axes.add_patch(ab_spot)
-
-    scale_micron = scale
-    scalebar_len_pix = res * scale_micron
-    scalebar_len = scalebar_len_pix / ncols
-    scalebar_xcoords = ((0.98 - scalebar_len), 0.98)
-    scale_text_xloc = np.mean(scalebar_xcoords) * ncols
-    plt.axhline(y=100, xmin=scalebar_xcoords[0], xmax=scalebar_xcoords[1],
-                linewidth = 8, color = "red")
-    plt.text(y=85, x=scale_text_xloc, s=(str(scale_micron)+ " " + r'$\mu$' + "m"),
-             color = 'red', fontsize = '20', horizontalalignment = 'center')
+    if show_scalebar == True:
+        scale_micron = scale
+        scalebar_len_pix = res * scale_micron
+        scalebar_len = scalebar_len_pix / ncols
+        scalebar_xcoords = ((0.98 - scalebar_len), 0.98)
+        scale_text_xloc = np.mean(scalebar_xcoords) * ncols
+        plt.axhline(y=100, xmin=scalebar_xcoords[0], xmax=scalebar_xcoords[1],
+                    linewidth = 8, color = "red")
+        plt.text(y=85, x=scale_text_xloc, s=(str(scale_micron)+ " " + r'$\mu$' + "m"),
+                 color = 'red', fontsize = '20', horizontalalignment = 'center')
 
     if show_particles == True:
-         circle_particles(DFrame)
+         circle_particles(DFrame, axes)
     if show_fibers == True:
-        def fiber_points(DFrame):
+        def fiber_points(DFrame, axes):
             for v1 in DFrame.vertex1:
                 v1point = plt.Circle((v1[1], v1[0]), 0.5,
                                     color = 'red', linewidth = 0,
@@ -341,8 +356,11 @@ def processed_image_viewer(image, DFrame, spot_coords, res,
                                     color = 'm', linewidth = 0,
                                     fill = True, alpha = 1)
                 axes.add_patch(v2point)
-
-        fiber_points(DFrame)
+            for centroid in DFrame.centroid:
+                centpoint = plt.Circle((centroid[1], centroid[0]), 2,
+                                        color = 'g', fill = False, alpha = 1)
+                axes.add_patch(centpoint)
+        fiber_points(DFrame, axes)
 
     if show_markers == True:
         for coords in markers:
@@ -354,7 +372,8 @@ def processed_image_viewer(image, DFrame, spot_coords, res,
         os.makedirs('../virago_output/' + chip_name + '/processed_images')
     plt.savefig('../virago_output/' + chip_name + '/processed_images/' + im_name +'.png', dpi = dpi)
     print("Processed image generated: " + im_name + ".png")
-    plt.show()
+    if show_image == True:
+        plt.show()
     plt.clf(); plt.close('all')
 #*********************************************************************************************#
 def view_pic(image, cmap = 'gray', dpi = 96, save = False):
@@ -388,12 +407,10 @@ def virago_csv_reader(chip_name, csv_list, vir_toggle):
         csv_data = pd.read_table(
                                  csvfile, sep = ',', skiprows = [0],
                                  error_bad_lines = False, usecols = [1,2,3,4,5,6],
-                                 header = None, names = ("y", "x", "r", "pc", "sdm",'z')
+                                 header = None, names = ('y', 'x', 'r', 'z', 'pc', 'sdm')
                                 )
-        #print(csv_data)
-        kept_particles = [float(val) for val in csv_data.pc
-                            if float(contrast_window[0]) < float(val) <= float(contrast_window[1])]
-
+        kept_particles = [val for val in csv_data.pc
+                          if float(contrast_window[0]) < float(val) <= float(contrast_window[1])]
         particle_count = len(kept_particles)
 
         csv_id = str(csv_info[1])+"."+str(csv_info[2])
@@ -496,7 +513,7 @@ def chip_file_reader(xml_file):
     return chip_file
 #*********************************************************************************************#
 def dejargonifier(chip_file):
-    """This takes antibody names and makes them more general for easier layperson understanding"""
+    """This takes antibody names from the chip file and makes them more general for easier layperson understanding. It returns two dictionaries that match spot number with antibody name."""
     jargon_dict = {
                    '13F6': 'anti-EBOVmay', '127-8': 'anti-MARV',
                    '6D8': 'anti-EBOVmak', '8.9F': 'anti-LASV',
@@ -511,6 +528,118 @@ def dejargonifier(chip_file):
             if mAb_name.endswith(key) or mAb_name.startswith(key):
                 mAb_name = jargon_dict[key]
         mAb_dict[q + 1] = mAb_name
+    mAb_dict_rev = {}
 
-    return mAb_dict
+    for key, val in mAb_dict.items():
+        mAb_dict_rev[val] = mAb_dict_rev.get(val, [])
+        mAb_dict_rev[val].append(key)
+    return mAb_dict, mAb_dict_rev
+#*********************************************************************************************#
+def histogrammer(particle_dict, spot_counter, baselined = False):
+    """Returns a DataFrame of histogram data from the particle dictionary. If baselined = True, returns a DataFrame where the histogram data has had pass 1 values subtracted for all spots"""
+    baseline_histogram_df, histogram_df =  pd.DataFrame(), pd.DataFrame()
+    for x in range(1,spot_counter+1):
+        hist_df, base_hist_df = pd.DataFrame(), pd.DataFrame()
+        histo_listo = [particle_dict[key]
+                       for key in sorted(particle_dict.keys())
+                       if int(key.split(".")[0]) == x]
+        for y, vals in enumerate(histo_listo):
+            hist_df[str(x)+'.'+str(y+1)], __ = np.histogram(vals, bins = 100, range = (0,10))
+        for col in hist_df:
+            spot_num = str(col.split('.')[0])
+            base_hist_df[col] = (hist_df[col] - hist_df[spot_num+'.'+str(1)])
+        baseline_histogram_df = pd.concat([baseline_histogram_df, base_hist_df], axis = 1)
+        histogram_df = pd.concat([histogram_df, hist_df], axis = 1)
+    if baselined == False:
+        return histogram_df
+    else:
+        return baseline_histogram_df
+#*********************************************************************************************#
+def histogram_averager(histogram_df, mAb_dict_rev, pass_counter):
+    """Returns an DataFrame representing the average histogram of all spots of the same type."""
+    mean_histo_df = pd.DataFrame()
+    for key in mAb_dict_rev:
+        mAb_split_df, pass_df, mean_spot_df = pd.DataFrame(), pd.DataFrame(), pd.DataFrame()
+        for col in histogram_df:
+            spot_num = int(col.split(".")[0])
+            if (spot_num in mAb_dict_rev[key]):
+                mAb_split_df = pd.concat((mAb_split_df,histogram_df[col]), axis = 1)
+        for i in range(1,pass_counter+1):
+            for col in mAb_split_df:
+                pass_num = int(col.split(".")[1])
+                if pass_num == i:
+                    pass_df = pd.concat((pass_df, mAb_split_df[col]), axis = 1)
+                    mean_pass_df = (pass_df.mean(axis = 1)).rename(key +'_'+ str(i))
+            mean_spot_df = pd.concat((mean_spot_df, mean_pass_df), axis = 1)
+        mean_histo_df = pd.concat((mean_histo_df, mean_spot_df), axis = 1)
+    return mean_histo_df
+#*********************************************************************************************#
+def combo_histogram_fig(mean_histogram_df, chip_name, pass_counter, colormap, corr = 'V'):
+    """Generates a histogram figure for each pass in the IRIS experiment from a DataFrame representing the average data for every spot type"""
+    histo_x = (mean_histogram_df.index / 10)
+    histo_dir = ('../virago_output/'+chip_name+'/histograms')
+    if not os.path.exists(histo_dir): os.makedirs(histo_dir)
+    for i in range(1,pass_counter+1):
+        c = 0
+        for col in mean_histogram_df:
+            spot_type = col.split("_")[0]
+            pass_num = int(col.split("_")[1])
+            if pass_num == i:
+                plt.step(x = histo_x,
+                         y = mean_histogram_df[col],
+                         linewidth = 1,
+                         color = colormap[c],
+                         alpha = 0.5,
+                         label = spot_type)
+                c += 1
+        plt.title(chip_name+" Pass "+str(i)+" Average Normalized Histograms")
+        plt.legend(loc = 'best', fontsize = 8)
+        plt.ylabel('Particle Count\n'+ 'Correlation Value >=' + corr, size = 8)
+        plt.yticks(range(-15,30,5), size = 8)
+        plt.xlabel("Percent Contrast", size = 8)
+        plt.xticks(np.arange(0,10.5,.5), size = 8)
+
+        fig_name = (chip_name+'_combohisto_pass_'+str(i)+'.png')
+        plt.savefig(histo_dir + '/' + fig_name, bbox_inches = 'tight', dpi = 150)
+        print('File generated: ' + fig_name)
+        plt.clf()
+#*********************************************************************************************#
+def average_spot_data(spot_df, spot_set, pass_counter, chip_name):
+    averaged_df = pd.DataFrame()
+    for spot in spot_set:
+        for i in range(1,pass_counter+1):
+            time, density, norm_density = [],[],[]
+            for ix, row in spot_df.iterrows():
+                scan_num = row['scan_number']
+                spot_type = row['spot_type']
+                if (scan_num == i) & (spot_type == spot):
+                    time.append(row[2])
+                    density.append(row[6])
+                    norm_density.append(row[7])
+                with warnings.catch_warnings():
+                    warnings.simplefilter("ignore", category=RuntimeWarning)
+                    avg_time = round(np.nanmean(time),2)
+                    avg_density = round(np.nanmean(density),2)
+                    std_density = round(np.nanstd(density),3)
+                    avg_norm_density = round(np.nanmean(norm_density),2)
+                    std_norm_density = round(np.nanstd(norm_density),3)
+            avg_df = pd.DataFrame([[spot,
+                                    i,
+                                    avg_time,
+                                    avg_density,
+                                    std_density,
+                                    avg_norm_density,
+                                    std_norm_density]],
+                                    columns=['spot_type',
+                                             'scan_number',
+                                             'avg_time',
+                                             'avg_density',
+                                             'std_density',
+                                             'avg_norm_density',
+                                             'std_norm_density']
+                                )
+            averaged_df = averaged_df.append(avg_df, ignore_index=True)
+            avg_spot_data = str('../virago_output/'+chip_name+'/'+chip_name+'_avg_spot_data.csv')
+            averaged_df.to_csv(avg_spot_data, sep = ',')
+    return averaged_df
 #*********************************************************************************************#
