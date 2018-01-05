@@ -202,13 +202,10 @@ if pgm_toggle.lower() in ('yes', 'y'):
             full_mask = disk_mask + marker_mask
 
 
-            pic3D_rescale_masked = ebc.better_masker_3D(pic3D_rescale, full_mask)
+            pic3D_rescale_masked = ebc.better_masker_3D(pic3D_rescale, full_mask, filled = True)
 
-            pic3D_orig_masked = ebc.better_masker_3D(pic3D_orig, full_mask)
+            # pic3D_orig_masked = ebc.better_masker_3D(pic3D_orig, full_mask)
 
-
-            # ebc.masker_3D(pic3D_masked, disk_mask)
-            # ebc.masker_3D(pic3D_orig, disk_mask)
             # figsize = (ncols/dpi, nrows/dpi)
             pix_area = (ncols * nrows) - np.count_nonzero(full_mask)
             if (nrows,ncols) == (1080,1072):
@@ -221,27 +218,22 @@ if pgm_toggle.lower() in ('yes', 'y'):
             pix_per_micron = mag/cam_micron_per_pix
 
             area_sqmm = round(((pix_area * cam_micron_per_pix**2) / mag**2)*1e-6, 6)
-            # area_squm = int(area_sqmm * 1e6)
 
             vis_blobs = ebc.blob_detect_3D(pic3D_rescale_masked,
                                            min_sig = 1,
                                            max_sig = 10,
                                            thresh = 0.07,
-                                           mask = full_mask,
                                            im_name = png)
 
-            # sdm_filter = 200 ###Make lower if edge particles are being detected
-            #if mirror_toggle is True: sdm_filter = sdm_filter / (np.mean(mirror))
 
-            total_particles = ebc.particle_quant_3D(pic3D_orig_masked, vis_blobs, sdm_filter = 2000)
+            particle_df = ebc.particle_quant_3D(pic3D_orig, vis_blobs)
 
-            particle_df = pd.DataFrame(total_particles, columns = ['y', 'x', 'r',
-                                                                   'z', 'pc'])
 
-            particle_df = ebc.dupe_finder(particle_df)
-            rounding_cols = ['yx_5','yx_10','yx_10/5','yx_5/10','yx_ceil','yx_floor']
+            particle_df, rounding_cols = ebc.coord_rounder(particle_df, val = 7.5)
+
             particle_df = ebc.dupe_dropper(particle_df, rounding_cols, sorting_col = 'pc')
             particle_count = len(particle_df)
+
             print("\nUnique particles counted: %d \n" % particle_count)
 
             particle_df.to_csv(vcount_dir + '/' + png + '.vcount.csv')
@@ -250,7 +242,6 @@ if pgm_toggle.lower() in ('yes', 'y'):
                 vdata_file.write("filename: %s \narea_sqmm: %f \nparticle_count: %d"
                                  % (png, area_sqmm, particle_count)
                                  )
-
 
 #---------------------------------------------------------------------------------------------#
             ### Fluorescent File Processer WORK IN PRORGRESS
@@ -409,7 +400,7 @@ if pgm_toggle.lower() in ('yes', 'y'):
                                        chip_name = chip_name,
                                        im_name = png)
 #---------------------------------------------------------------------------------------------#
-            particle_df.drop(rounding_cols, axis = 1, inplace = True)
+            # particle_df.drop(rounding_cols, axis = 1, inplace = True)
         print("Time to scan PGMs: " + str(datetime.now() - startTime))
 #*********************************************************************************************#
 
@@ -662,7 +653,7 @@ plt.savefig('../virago_output/' + chip_name + '/' +  plot_name,
             bbox_inches = 'tight', pad_inches = 0.1, dpi = 300)
 print('File generated: ' + plot_name)
 csv_spot_data = str('../virago_output/' + chip_name + '/' + chip_name + '_spot_data.csv')
-spot_df.to_csv(csv_spot_data, sep = ',')
+spot_df.to_csv(csv_spot_data)
 #plt.show()
 plt.clf(); plt.close('all')
 print('File generated: '+ csv_spot_data)

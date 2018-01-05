@@ -126,40 +126,38 @@ def spot_finder(im, canny_sig = 2):
     where particles of interest should be accumulating"""
     nrows, ncols = im.shape
     pic_canny = feature.canny(im, sigma = canny_sig)
-    hough_radius = range(500, 601, 25)
+    hough_radius = range(525, 651, 25)
     hough_res = transform.hough_circle(pic_canny, hough_radius)
     accums, cx, cy, rad = transform.hough_circle_peaks(hough_res, hough_radius,
                                                    total_num_peaks=1)
-    # if oob == True:
-    #     if cx < ncols * 0.25 or cx > ncols * 0.75:
-    #         cx = ncols * 0.5
-    #         cy = nrows * 0.5
-    #         rad = rad * 0.5
 
     xyr = tuple((int(cx), int(cy), int(rad)))
     print(xyr)
     return xyr, pic_canny
 #*********************************************************************************************#
-def masker_3D(im3D, disk_mask):
-    """Masks areas for all images in the stack outside of the antibody spot,
-    and within 5 pixels of the image border."""
-    border_mask = 5
-    for image in im3D:
-        image[0:border_mask,:], image[-(border_mask):,:] = image.max(), image.max()
-        image[:,0:border_mask], image[:,-(border_mask):] = image.max(), image.max()
-        image[disk_mask] = image.max()
+# def masker_3D(im3D, disk_mask):
+#     """Masks areas for all images in the stack outside of the antibody spot,
+#     and within 5 pixels of the image border."""
+#     border_mask = 5
+#     for image in im3D:
+#         image[0:border_mask,:], image[-(border_mask):,:] = image.max(), image.max()
+#         image[:,0:border_mask], image[:,-(border_mask):] = image.max(), image.max()
+#         image[disk_mask] = image.max()
 #*********************************************************************************************#
-def better_masker_3D(pic3D, mask):
+def better_masker_3D(pic3D, mask, filled = False):
     pic3D_masked = np.ma.empty_like(pic3D)
+    pic3D_filled = np.empty_like(pic3D)
     for plane, pic in enumerate(pic3D):
         pic3D_masked[plane] = np.ma.array(pic, mask = mask)
-        # print(pic3D_masked[plane])
-        # ebc.view_pic(pic3D_masked[plane])
-    return pic3D_masked
+        if filled == True:
+            pic3D_filled[plane] = pic3D_masked[plane].filled(fill_value = np.nan)
 
-
+    if filled == False:
+        return pic3D_masked
+    else:
+        return pic3D_filled
 #*********************************************************************************************#
-def blob_detect_3D(im3D, min_sig, max_sig, thresh, mask, im_name = ""):
+def blob_detect_3D(im3D, min_sig, max_sig, thresh, im_name = ""):
     """This is the primary function for detecting "blobs" in the stack of IRIS images.
     Uses the Difference of Gaussians algorithm"""
     total_blobs = np.empty(shape = (0,4))
@@ -180,16 +178,16 @@ def blob_detect_3D(im3D, min_sig, max_sig, thresh, mask, im_name = ""):
 
     return total_blobs
 #*********************************************************************************************#
-def particle_quant_3D(im3D, d_blobs, sdm_filter):
+def particle_quant_3D(im3D, d_blobs):
     """This measures the percent contrast for every detected blob in the stack
     and filters out blobs that are on edges by setting a cutoff for standard deviation of the mean
      for measured background intensity. Blobs are now considered "particles" """
     perc_contrast, std_background = [],[]
-    particle_df = pd.DataFrame
-    med_list = [np.ma.median(image) for image in im3D]
+
+    # med_list = [np.ma.median(image) for image in im3D]
     for i, blob in enumerate(d_blobs):
         y,x,r,z_name = d_blobs[i]
-        y = int(y); x = int(x); z_loc = int(z_name-1) ; r = int(math.ceil(r))
+        z_loc = z_name-1
 
         point_lum = im3D[ z_loc , int(y) , x ]
         local = im3D[ z_loc , y-(r):y+(r+1) , x-(r):x+(r+1) ]
@@ -199,39 +197,42 @@ def particle_quant_3D(im3D, d_blobs, sdm_filter):
             local = np.full([r+1,r+1], point_lum)
             local_circ = np.hstack([local[0,1:-1],local[:,0],local[-1,1:-1],local[:,-1]])
 
-        median_bg = np.median(local_circ)
+        bg_val = np.median(local_circ)
         std_bg = np.std(local_circ)
-            # if std_bg 
+        if std_bg > 500:
+            bg_val = np.percentile(local_circ, 5)
 
-        perc_contrast_pt = ((point_lum - median_bg) * 100) / median_bg
+        perc_contrast_pt = ((point_lum - bg_val) * 100) / bg_val
         perc_contrast.append(perc_contrast_pt)
         std_background.append(std_bg)
-        # bg_lum_sdm.append([bg_lum_sdm_pt])
-        # point_df = pd.DataFrame([[y,x,r,z_name,perc_contrast_pt]])
-        # particle_df = particle_df.append(point_df, ignore_index=True)
-        # print(point_df)
-    print(std_background)
-    d_blobs = np.append(d_blobs, np.asarray(perc_contrast), axis = 1)
-    # d_blobs = np.append(d_blobs, np.asarray(bg_lum_sdm), axis = 1)
-    particles = d_blobs[d_blobs[:,4] > 0]
-    if len(particles) == 0: particles = [[0,0,0,0,0]]
+
+    particle_df = pd.DataFrame(data = d_blobs, columns = ['y','x','r','z'])
+    particle_df['pc'] = perc_contrast
+    particle_df['std_bg'] = std_background
+
+    particle_df = particle_df[particle_df.pc > 0]
+    particle_df.reset_index(drop = True, inplace = True)
+
+    if len(particle_df) == 0:
+        particle_df = pd.DataFrame(data = [[0,0,0,0,0]], columns = ['y','x','r','z'])
     # print(particles)
     # print(particle_df)
-    return particles
+    return particle_df
 #*********************************************************************************************#
-def dupe_finder(DFrame):
-    """Identifies duplicate particles, which inevitably occurs in multi-image stacks"""
-    xrd5 = (DFrame.x/5).round()*5; yrd5 = (DFrame.y/5).round()*5
-    xrd10 = DFrame.x.round(-1); yrd10 = DFrame.y.round(-1)
-    xceil = np.ceil(DFrame.x/10)*10; yceil = np.ceil(DFrame.y/10)*10
-    xfloor = np.floor(DFrame.x/10)*10; yfloor = np.floor(DFrame.y/10)*10
-    DFrame['yx_5'] = pd.Series(list(zip(yrd5,xrd5)))
-    DFrame['yx_10'] = pd.Series(list(zip(yrd10,xrd10)))
-    DFrame['yx_5/10'] = pd.Series(list(zip(yrd5,xrd10)))
-    DFrame['yx_10/5'] = pd.Series(list(zip(yrd10,xrd5)))
-    DFrame['yx_ceil'] = pd.Series(list(zip(yceil,xceil)))
-    DFrame['yx_floor'] = pd.Series(list(zip(yfloor,xfloor)))
-    return DFrame
+def coord_rounder(DFrame, val = 7.5):
+    """Identifies duplicate coordinates for particles, which inevitably occurs in multi-image stacks"""
+
+    xrd = (DFrame.x/val).round()*val
+    yrd = (DFrame.y/val).round()*val
+    xceil = np.ceil(DFrame.x/val)*val; yceil = np.ceil(DFrame.y/val)*val
+    xfloor = np.floor(DFrame.x/val)*val; yfloor = np.floor(DFrame.y/val)*val
+    DFrame['yx_'+str(val)] = pd.Series(list(zip(yrd,xrd)))
+    DFrame['yx_cc'] = pd.Series(list(zip(yceil,xceil)))
+    DFrame['yx_ff'] = pd.Series(list(zip(yfloor,xfloor)))
+    DFrame['yx_cf'] = pd.Series(list(zip(yceil,xfloor)))
+    DFrame['yx_fc'] = pd.Series(list(zip(yfloor,xceil)))
+    rounding_cols = ['yx_'+str(val),'yx_cc','yx_ff','yx_cf','yx_fc']
+    return DFrame, rounding_cols
 #*********************************************************************************************#
 def dupe_dropper(DFrame, rounding_cols, sorting_col = 'pc'):
     """Removes duplicate particles while keeping the highest contrast particle for each duplicate"""
@@ -239,6 +240,7 @@ def dupe_dropper(DFrame, rounding_cols, sorting_col = 'pc'):
     for column in rounding_cols:
         DFrame.drop_duplicates(subset = (column), keep = 'last', inplace = True)
     DFrame.reset_index(drop = True, inplace = True)
+    DFrame.drop(columns = rounding_cols, inplace = True)
     return DFrame
 #*********************************************************************************************#
 def color_mixer(zlen,c1,c2,c3,c4):
