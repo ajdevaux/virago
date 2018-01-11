@@ -9,7 +9,7 @@ import pandas as pd
 import numpy as np
 import seaborn as sns
 from scipy import stats
-from skimage import exposure, feature, io, transform, filters
+from skimage import exposure, feature, io, transform, filters, measure
 import glob, os, json, sys, math, warnings
 import ebovchan as ebc
 
@@ -110,9 +110,6 @@ for txtfile in iris_txt:
     spot_df = spot_df.append(spot_data_solo, ignore_index = True)
 spot_df_vir = spot_df.copy()
 #*********************************************************************************************#
-### Important Value
-# if not pass_counter: pass_counter = int(len(pass_labels))
-#*********************************************************************************************#
 spot_labels = [[val]*(pass_counter) for val in mAb_dict.values()]
 spot_set = []
 for val in mAb_dict.values():
@@ -180,6 +177,7 @@ if pgm_toggle.lower() in ('yes', 'y'):
 
             norm_scalar = np.median(pic3D) * 2
             pic3D_norm = pic3D / norm_scalar
+
             pic3D_norm[pic3D_norm > 1] = 1
 
             marker_locs, marker_mask = ebc.marker_finder(im = pic3D_norm[mid_pic],
@@ -187,11 +185,9 @@ if pgm_toggle.lower() in ('yes', 'y'):
                                                          thresh = 0.8,
                                                          gen_mask = True)
 
-
-            pic3D_clahe = ebc.clahe_3D(pic3D_norm)
+            pic3D_clahe = ebc.clahe_3D(pic3D_norm)##UserWarning silenced
 
             pic3D_rescale = ebc.rescale_3D(pic3D_clahe)
-            pic3D_masked = pic3D_rescale.copy()
 
             xyr, pic_canny  = ebc.spot_finder(pic3D_rescale[mid_pic])
 
@@ -201,10 +197,7 @@ if pgm_toggle.lower() in ('yes', 'y'):
             disk_mask = (width**2 + height**2 > rad**2)
             full_mask = disk_mask + marker_mask
 
-
             pic3D_rescale_masked = ebc.better_masker_3D(pic3D_rescale, full_mask, filled = True)
-
-            # pic3D_orig_masked = ebc.better_masker_3D(pic3D_orig, full_mask)
 
             # figsize = (ncols/dpi, nrows/dpi)
             pix_area = (ncols * nrows) - np.count_nonzero(full_mask)
@@ -229,19 +222,14 @@ if pgm_toggle.lower() in ('yes', 'y'):
             particle_df = ebc.particle_quant_3D(pic3D_orig, vis_blobs)
 
 
-            particle_df, rounding_cols = ebc.coord_rounder(particle_df, val = 7.5)
+            particle_df, rounding_cols = ebc.coord_rounder(particle_df, val = 10)
 
             particle_df = ebc.dupe_dropper(particle_df, rounding_cols, sorting_col = 'pc')
-            particle_count = len(particle_df)
+            particle_df.drop(columns = rounding_cols, inplace = True)
 
-            print("\nUnique particles counted: %d \n" % particle_count)
 
-            particle_df.to_csv(vcount_dir + '/' + png + '.vcount.csv')
-
-            with open(vcount_dir + '/' + png + '.vdata.txt', 'w') as vdata_file:
-                vdata_file.write("filename: %s \narea_sqmm: %f \nparticle_count: %d"
-                                 % (png, area_sqmm, particle_count)
-                                 )
+            slice_counts = particle_df.z.value_counts()
+            high_count = int(slice_counts.index[0] - 1)
 
 #---------------------------------------------------------------------------------------------#
             ### Fluorescent File Processer WORK IN PRORGRESS
@@ -385,9 +373,59 @@ if pgm_toggle.lower() in ('yes', 'y'):
                     plt.clf(); plt.close('all')
 
 #---------------------------------------------------------------------------------------------#
+            filo_toggle = True
+            if filo_toggle is True:
+                print("\nAnalyzing filaments...\n")
+                filo_pic = np.ma.array(pic3D_rescale[high_count], mask = full_mask)
+                masked_pic_orig = np.ma.array(pic3D_orig[high_count], mask = full_mask)
+
+                pic_binary, binary_props = ebc.filo_binarize(filo_pic, masked_pic_orig)
+                binary_df, bbox_list = ebc.filo_binary_quant(binary_props,
+                                                  pic3D_orig[high_count],
+                                                  res = pix_per_micron)
+                if not binary_df.empty:
+                    pic_skel, skel_props = ebc.filo_skel(pic_binary, masked_pic_orig)
+                    skel_df = ebc.filo_skel_quant(skel_props, res = pix_per_micron)
+
+                    binskel_df = ebc.boxcheck_merge(skel_df, binary_df,
+                                             pointcol = 'centroid_skel',
+                                             boxcol = 'bbox_verts')
+
+                    binskel_df.sort_values('pixel_ct', kind = 'quicksort', inplace = True)
+                    binskel_df.drop_duplicates(subset = 'label_skel', keep = 'last', inplace = True)
+                    binskel_df.reset_index(drop = True, inplace = True)
+
+                    filament_df = ebc.boxcheck_merge(particle_df, binskel_df,
+                                                pointcol = 'coords_yx',
+                                                boxcol = 'bbox_verts')
+
+                    filament_df.sort_values('pc', kind = 'quicksort', inplace = True)
+                    filament_df.drop_duplicates(subset = 'label_skel', keep = 'last', inplace = True)
+
+                    filament_df.to_csv('foo.csv')
+                    filament_count = len(filament_df)
+                else: filament_count = 0
+
+            particle_count = len(particle_df)
+            perc_fil = filament_count/particle_count*100
+            print("\nNon-filamentous particles counted: %d \n\
+                     Filaments counted: %d \n\
+                     Percent filaments: %.2f \n" % (particle_count, filament_count, perc_fil)
+                  )
+
+            particle_df.to_csv(vcount_dir + '/' + png + '.vcount.csv')
+            with open(vcount_dir + '/' + png + '.vdata.txt', 'w') as vdata_file:
+                vdata_file.write("filename: %s \n\
+                                  area_sqmm: %f \n\
+                                  particle_count: %d \n\
+                                  filament_count %d \n\
+                                  spot_coords_xyr: %s\n\
+                                  marker_coords: %s\n"
+                                  % (png, area_sqmm, particle_count,
+                                     filament_count, xyr, marker_locs))
+#---------------------------------------------------------------------------------------------#
         ####Processed Image Renderer
-            slice_counts = particle_df.z.value_counts()
-            high_count = int(slice_counts.index[0] - 1)
+
             pic_to_show = pic3D_rescale[high_count]
 
             ebc.processed_image_viewer(image = pic_to_show,
@@ -398,7 +436,8 @@ if pgm_toggle.lower() in ('yes', 'y'):
                                        show_particles = True,
                                        show_markers = True,
                                        chip_name = chip_name,
-                                       im_name = png)
+                                       im_name = png,
+                                       show_image = False)
 #---------------------------------------------------------------------------------------------#
             # particle_df.drop(rounding_cols, axis = 1, inplace = True)
         print("Time to scan PGMs: " + str(datetime.now() - startTime))
@@ -546,43 +585,6 @@ def spot_remover(spot_df):
 #                         norm_density_std)
 #             averaged_df.append(avg_data)
 
-#
-# def average_spot_data(spot_df, spot_set, pass_counter):
-#     averaged_df = pd.DataFrame()
-#     for spot in spot_set:
-#         for i in range(1,pass_counter+1):
-#             time, density, norm_density = [],[],[]
-#             for ix, row in spot_df.iterrows():
-#                 scan_num = row['scan_number']
-#                 spot_type = row['spot_type']
-#                 if (scan_num == i) & (spot_type == spot):
-#                     time.append(row[2])
-#                     density.append(row[6])
-#                     norm_density.append(row[7])
-#                 with warnings.catch_warnings():
-#                     warnings.simplefilter("ignore", category=RuntimeWarning)
-#                     avg_time = round(np.nanmean(time),2)
-#                     avg_density = round(np.nanmean(density),2)
-#                     std_density = round(np.nanstd(density),3)
-#                     avg_norm_density = round(np.nanmean(norm_density),2)
-#                     std_norm_density = round(np.nanstd(norm_density),3)
-#             avg_df = pd.DataFrame([[spot,
-#                                     i,
-#                                     avg_time,
-#                                     avg_density,
-#                                     std_density,
-#                                     avg_norm_density,
-#                                     std_norm_density]],
-#                                     columns=['spot_type',
-#                                              'scan_number',
-#                                              'avg_time',
-#                                              'avg_density',
-#                                              'std_density',
-#                                              'avg_norm_density',
-#                                              'std_norm_density']
-#                                 )
-#             averaged_df = averaged_df.append(avg_df, ignore_index=True)
-#     return averaged_df
 
 averaged_df = ebc.average_spot_data(spot_df, spot_set, pass_counter, chip_name)
 # -------------------------------------------------------------------

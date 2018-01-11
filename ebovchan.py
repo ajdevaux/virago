@@ -3,11 +3,12 @@ from __future__ import division
 from future.builtins import input
 from lxml import etree
 import matplotlib.pyplot as plt
-from matplotlib import cm
 import pandas as pd
 import numpy as np
 import seaborn as sns
-from skimage import exposure, feature, transform, filters
+from scipy.spatial.distance import pdist, squareform
+from scipy.sparse import csr_matrix, csgraph
+from skimage import exposure, feature, transform, filters, util, measure, morphology
 import os, json, math, warnings
 #*********************************************************************************************#
 #
@@ -100,10 +101,13 @@ def marker_finder(im, marker, thresh = 0.9, gen_mask = False):
 #*********************************************************************************************#
 def clahe_3D(im3D, cliplim = 0.003):
     """Performs the contrast limited adaptive histogram equalization on the stack of images"""
-    im3D_clahe = np.empty_like(im3D)
-    for plane, image in enumerate(im3D):
-        im3D_clahe[plane] = exposure.equalize_adapthist(image, clip_limit = cliplim)
-        #plt.imshow(im3D_clahe[plane]); plt.show()
+    im3D_clahe = np.empty_like(im3D).astype('float64')
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")
+        warnings.warn(UserWarning)##Images are not acutally converted to uint16?
+        for plane, image in enumerate(im3D):
+                im3D_clahe[plane] = exposure.equalize_adapthist(image, clip_limit = cliplim)
+
     return im3D_clahe
 #*********************************************************************************************#
 def rescale_3D(im3D):
@@ -161,11 +165,12 @@ def blob_detect_3D(im3D, min_sig, max_sig, thresh, im_name = ""):
     """This is the primary function for detecting "blobs" in the stack of IRIS images.
     Uses the Difference of Gaussians algorithm"""
     total_blobs = np.empty(shape = (0,4))
+
     for plane, image in enumerate(im3D):
         blobs = feature.blob_dog(image, min_sigma = min_sig, max_sigma = max_sig,
                                  threshold = thresh, overlap = 0
                                 )
-        blobs[:,2] = blobs[:,2]*math.sqrt(2)
+
         if len(blobs) == 0:
             print("No blobs here")
             blobs = np.zeros(shape = (1,4))
@@ -182,15 +187,17 @@ def particle_quant_3D(im3D, d_blobs):
     """This measures the percent contrast for every detected blob in the stack
     and filters out blobs that are on edges by setting a cutoff for standard deviation of the mean
      for measured background intensity. Blobs are now considered "particles" """
-    perc_contrast, std_background = [],[]
-
+    perc_contrast, std_background, coords_yx = [],[],[]
+    sqrt_2 = math.sqrt(2)
     # med_list = [np.ma.median(image) for image in im3D]
     for i, blob in enumerate(d_blobs):
-        y,x,r,z_name = d_blobs[i]
+        y, x, sigma, z_name = d_blobs[i]
+        r = int(np.ceil(sigma * sqrt_2))
+        if r < 3: r = 3
         z_loc = z_name-1
 
-        point_lum = im3D[ z_loc , int(y) , x ]
-        local = im3D[ z_loc , y-(r):y+(r+1) , x-(r):x+(r+1) ]
+        point_lum = im3D[z_loc , y , x]
+        local = im3D[z_loc , y-(r):y+(r+1) , x-(r):x+(r+1)]
 
         try: local_circ = np.hstack([local[0,1:-1],local[:,0],local[-1,1:-1],local[:,-1]])
         except IndexError:
@@ -205,27 +212,33 @@ def particle_quant_3D(im3D, d_blobs):
         perc_contrast_pt = ((point_lum - bg_val) * 100) / bg_val
         perc_contrast.append(perc_contrast_pt)
         std_background.append(std_bg)
+        coords_yx.append((y,x))
 
-    particle_df = pd.DataFrame(data = d_blobs, columns = ['y','x','r','z'])
+    particle_df = pd.DataFrame(data = d_blobs, columns = ['y','x','sigma','z'])
     particle_df['pc'] = perc_contrast
     particle_df['std_bg'] = std_background
+    particle_df['coords_yx'] = coords_yx
 
     particle_df = particle_df[particle_df.pc > 0]
+    particle_df = particle_df[particle_df.std_bg < 750]
     particle_df.reset_index(drop = True, inplace = True)
 
     if len(particle_df) == 0:
-        particle_df = pd.DataFrame(data = [[0,0,0,0,0]], columns = ['y','x','r','z'])
-    # print(particles)
-    # print(particle_df)
+        particle_df = pd.DataFrame(data = [[0,0,0,0,0,0,0]],
+                                   columns = ['y','x','sigma','z','pc','bg','coords_yx'])
+
     return particle_df
 #*********************************************************************************************#
-def coord_rounder(DFrame, val = 7.5):
+def coord_rounder(DFrame, val = 10):
     """Identifies duplicate coordinates for particles, which inevitably occurs in multi-image stacks"""
 
     xrd = (DFrame.x/val).round()*val
     yrd = (DFrame.y/val).round()*val
-    xceil = np.ceil(DFrame.x/val)*val; yceil = np.ceil(DFrame.y/val)*val
-    xfloor = np.floor(DFrame.x/val)*val; yfloor = np.floor(DFrame.y/val)*val
+    xceil = np.ceil(DFrame.x/val)*val
+    yceil = np.ceil(DFrame.y/val)*val
+    xfloor = np.floor(DFrame.x/val)*val
+    yfloor = np.floor(DFrame.y/val)*val
+
     DFrame['yx_'+str(val)] = pd.Series(list(zip(yrd,xrd)))
     DFrame['yx_cc'] = pd.Series(list(zip(yceil,xceil)))
     DFrame['yx_ff'] = pd.Series(list(zip(yfloor,xfloor)))
@@ -234,13 +247,13 @@ def coord_rounder(DFrame, val = 7.5):
     rounding_cols = ['yx_'+str(val),'yx_cc','yx_ff','yx_cf','yx_fc']
     return DFrame, rounding_cols
 #*********************************************************************************************#
-def dupe_dropper(DFrame, rounding_cols, sorting_col = 'pc'):
+def dupe_dropper(DFrame, rounding_cols, sorting_col):
     """Removes duplicate particles while keeping the highest contrast particle for each duplicate"""
     DFrame.sort_values([sorting_col], kind = 'quicksort', inplace = True)
     for column in rounding_cols:
         DFrame.drop_duplicates(subset = (column), keep = 'last', inplace = True)
     DFrame.reset_index(drop = True, inplace = True)
-    DFrame.drop(columns = rounding_cols, inplace = True)
+    # DFrame.drop(columns = rounding_cols, inplace = True)
     return DFrame
 #*********************************************************************************************#
 def color_mixer(zlen,c1,c2,c3,c4):
@@ -317,23 +330,27 @@ def processed_image_viewer(image, DFrame, spot_coords, res,
                             cmap = 'gray', dpi = 96, markers = [],
                             chip_name = "", im_name = "",
                             show_particles = True, show_fibers = False,
-                            show_markers = True, show_scalebar = True,
-                            show_image = True, scale = 10):
+                            show_markers = True, show_info = False,
+                            show_image = True, scale = 15,
+                            crosshairs = False, invert = False):
     """Generates a full-resolution PNG image after, highlighting features, showing counted particles,
     and a particle contrast histogram"""
     nrows, ncols = image.shape
     cx,cy,rad = spot_coords
+    true_radius = round((rad - 20) / res,2)
     figsize = (ncols/dpi, nrows/dpi)
     fig = plt.figure(figsize = figsize, dpi = dpi)
     axes = plt.Axes(fig,[0,0,1,1])
     fig.add_axes(axes)
     axes.set_axis_off()
+    if invert == True:
+        image = util.invert(image)
     axes.imshow(image, cmap = cmap)
 
     ab_spot = plt.Circle((cx, cy), rad, color='#5A81BB',
                   linewidth=5, fill=False, alpha = 0.5)
     axes.add_patch(ab_spot)
-    if show_scalebar == True:
+    if show_info == True:
         scale_micron = scale
         scalebar_len_pix = res * scale_micron
         scalebar_len = scalebar_len_pix / ncols
@@ -341,8 +358,12 @@ def processed_image_viewer(image, DFrame, spot_coords, res,
         scale_text_xloc = np.mean(scalebar_xcoords) * ncols
         plt.axhline(y=100, xmin=scalebar_xcoords[0], xmax=scalebar_xcoords[1],
                     linewidth = 8, color = "red")
-        plt.text(y=85, x=scale_text_xloc, s=(str(scale_micron)+ " " + r'$\mu$' + "m"),
+        plt.text(y = 85, x = scale_text_xloc, s = (str(scale_micron)+ " " + r'$\mu$' + "m"),
                  color = 'red', fontsize = '20', horizontalalignment = 'center')
+        plt.text(y = 55, x = 5, s = im_name,
+                 color = 'red', fontsize = '20', horizontalalignment = 'left')
+        plt.text(y = 85, x = 5, s = "Radius = " + str(true_radius)+ " " + r'$\mu$' + "m",
+                 color = 'red', fontsize = '20', horizontalalignment = 'left')
 
     if show_particles == True:
          circle_particles(DFrame, axes)
@@ -369,6 +390,9 @@ def processed_image_viewer(image, DFrame, spot_coords, res,
             mark = plt.Rectangle((coords[1]-58,coords[0]-78), 114, 154,
                                   fill = False, ec = 'green', lw = 1)
             axes.add_patch(mark)
+    if crosshairs == True:
+        plt.axhline(y = cy, color = 'red', linewidth = 3)
+        plt.axvline(x = cx, color = 'red', linewidth = 3)
 
     if not os.path.exists('../virago_output/'+ chip_name + '/processed_images'):
         os.makedirs('../virago_output/' + chip_name + '/processed_images')
@@ -644,4 +668,134 @@ def average_spot_data(spot_df, spot_set, pass_counter, chip_name):
             avg_spot_data = str('../virago_output/'+chip_name+'/'+chip_name+'_avg_spot_data.csv')
             averaged_df.to_csv(avg_spot_data, sep = ',')
     return averaged_df
+#*********************************************************************************************#
+def filo_binarize(filo_pic, pic_orig, return_props = True, show_hist = False):
+
+    spot_median = np.ma.median(pic_orig)
+    thresh = np.ma.median(filo_pic) + 0.3
+
+    print("\nBinary threshold = %.3f \n" % thresh)
+    if show_hist == True:
+        plt.xticks(np.arange(0,1.2,0.2), size = 10)
+        plt.axvline(thresh, color = 'r')
+        sns.distplot(filo_pic.ravel(), kde = False, norm_hist = True)
+
+    pic_binary = (filo_pic > thresh).astype(int)
+    pic_binary = pic_binary.filled(0)
+    if return_props == True:
+        pic_binary_label = measure.label(pic_binary, connectivity = 2)
+        binary_props = measure.regionprops(pic_binary_label, pic_orig, cache = True)
+        return pic_binary, binary_props
+    else:
+        return pic_binary
+#*********************************************************************************************#
+def filo_skel(pic_binary, pic_orig):
+    pic_skel = morphology.skeletonize(pic_binary)
+    pic_skel_label, labels = measure.label(pic_skel,
+                                              return_num = True,
+                                              connectivity = 2)
+    skel_props = measure.regionprops(pic_skel_label, pic_orig, cache = True)
+
+    return pic_skel, skel_props
+#*********************************************************************************************#
+def measure_filament(coords_dict, res):
+    filo_lengths, vertex1, vertex2 = [],[],[]
+    for key in coords_dict:
+        fiber_coords = coords_dict[key]
+        dist_matrix = pdist(fiber_coords, metric='cityblock')
+        sparse_matrix = csr_matrix(squareform(dist_matrix))
+        distances, preds = csgraph.shortest_path(sparse_matrix,
+                                                 method = 'FW',
+                                                 return_predecessors=True)
+        ls_path = np.max(distances)
+        farpoints = np.where(distances == ls_path)
+        endpt_loc = len(farpoints[0]) // 2
+        v1 = fiber_coords[farpoints[0][0]]
+        v2 = fiber_coords[farpoints[0][endpt_loc]]
+        filo_lengths.append(float(round(ls_path / res, 3)))
+        vertex1.append(tuple(v1))
+        vertex2.append(tuple(v2))
+
+    return filo_lengths, vertex1, vertex2
+#*********************************************************************************************#
+def filo_skel_quant(regionprops, res):
+    coords_dict = {}
+    label_list, centroid_list = [],[]
+    skel_df = pd.DataFrame()
+    for region in regionprops:
+        if (region['area'] > 4) & (region['area'] < 500):
+            label_list.append(region['label'])
+            coords_dict[region['label']] = region['coords']
+            centroid_list.append(region['centroid'])
+
+    skel_df['label_skel'] = label_list
+    skel_df['centroid_skel'] = centroid_list
+
+    filo_lengths, vertex1, vertex2 = measure_filament(coords_dict, res)
+
+    skel_df['filament_length_um'] = filo_lengths
+    skel_df['vertex1'] = vertex1
+    skel_df['vertex2'] = vertex2
+    skel_df.reset_index(drop = True, inplace = True)
+    return skel_df
+#*********************************************************************************************#
+def filo_binary_quant(regionprops, pic, res):
+    label_list, centroid_list, pixel_ct, coords_list, bbox_list = [],[],[],[],[]
+    binary_df = pd.DataFrame()
+    for region in regionprops:
+        if (region['area'] > 16) & (region['area'] < 2500):
+            label_list.append(region['label'])
+            coords_list.append(region['coords'])
+            centroid_list.append(region['centroid'])
+            bbox_list.append((region['bbox'][0:2], region['bbox'][2:]))
+            pixel_ct.append(region['area'])
+
+
+    binary_df['label_bin'] = label_list
+    binary_df['centroid_bin'] = centroid_list
+    binary_df['pixel_ct'] = pixel_ct
+
+    med_intensity_list = [np.median([pic[tuple(coords)]
+                          for coords in coord_array])
+                          for coord_array in coords_list]
+    binary_df['median_intensity'] = med_intensity_list
+
+    median_bg_list, bbox_vert_list = [],[]
+    for bbox in bbox_list:
+        top_left = (bbox[0][0],bbox[0][1])
+        top_rt = (bbox[0][0], bbox[1][1])
+        bot_rt = (bbox[1][0], bbox[1][1])
+        bot_left = (bbox[1][0], bbox[0][1])
+        bbox_verts = np.array([top_left,top_rt,bot_rt,bot_left])
+        bbox_vert_list.append(bbox_verts)
+
+        top_edge = pic[bbox[0][0],bbox[0][1]:bbox[1][1]+1]
+        bottom_edge = pic[bbox[1][0]-1,bbox[0][1]:bbox[1][1]+1]
+        rt_edge = pic[bbox[0][0]:bbox[1][0]+1,bbox[1][1]]
+        left_edge = pic[bbox[0][0]:bbox[1][0]+1,bbox[0][1]]
+        all_edges = np.hstack([top_edge, bottom_edge, rt_edge, left_edge])
+
+        median_bg = np.median(all_edges)
+        median_bg_list.append(median_bg)
+
+    binary_df['median_background'] = median_bg_list
+    binary_df['bbox_verts'] = bbox_vert_list
+    binary_df.reset_index(drop = True, inplace = True)
+
+    return binary_df,bbox_vert_list
+#*********************************************************************************************#
+def boxcheck_merge(df1, df2, pointcol, boxcol):
+    new_df = pd.DataFrame()
+    for i, point in enumerate(df1[pointcol]):
+        arr_point = np.array(point).reshape(1,2)
+        for j, bbox in enumerate(df2[boxcol]):
+            boxcheck = measure.points_in_poly(arr_point,bbox)
+            if boxcheck == True:
+                series1 = df1.loc[i]
+                series2 = df2.loc[j]
+                combo_series = series1.append(series2)
+                new_df = new_df.append(combo_series, ignore_index = True)
+                df1.drop([i], inplace = True)
+                break
+    return new_df
 #*********************************************************************************************#

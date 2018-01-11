@@ -195,10 +195,10 @@ while spot_to_scan <= spot_counter:
         if zslice_count > 1: mid_pic = int(np.ceil(zslice_count/2))
         else: mid_pic = 0
 
-        operative_pic = pic3D_rescale[mid_pic]
+        filo_pic = pic3D_rescale[mid_pic]
         measurement_pic = pic3D_orig[mid_pic]
 
-        xyr, pic_canny = ebc.spot_finder(operative_pic, canny_sig = 2, oob = False)
+        xyr, pic_canny = ebc.spot_finder(filo_pic, canny_sig = 2)
 
         width = col - xyr[0]
         height = row - xyr[1]
@@ -208,7 +208,7 @@ while spot_to_scan <= spot_counter:
 
         figsize = (ncols/dpi, nrows/dpi)
 
-        masked_pic_oper = np.ma.array(operative_pic, mask = filo_disk_mask + marker_mask)
+        masked_pic_oper = np.ma.array(filo_pic, mask = filo_disk_mask + marker_mask)
         masked_pic_orig = np.ma.array(pic3D_orig[mid_pic], mask = (filo_disk_mask + marker_mask))
 
         pix_area = np.ma.count(masked_pic_orig)
@@ -225,7 +225,6 @@ while spot_to_scan <= spot_counter:
         area_list.append(area_sqmm)
 #---------------------------------------------------------------------------------------------#
         ###FOR FILAMENTOUS PARTICLES###
-        # thresh = filters.threshold_yen(operative_pic)
         spot_median = np.ma.median(masked_pic_orig)
         thresh = np.ma.median(masked_pic_oper) + 0.3
 
@@ -235,14 +234,14 @@ while spot_to_scan <= spot_counter:
         plt.axvline(thresh, color = 'r')
         sns.distplot(masked_pic_oper.ravel(), kde = False, norm_hist = True)
 
-        pic_binary = (operative_pic > thresh).astype(int)
+        pic_binary = (filo_pic > thresh).astype(int)
         pic_binary[filo_disk_mask] = 0
         pic_binary[marker_mask] = 0
         pic_skel = morphology.skeletonize(pic_binary)
         pic_skel_labelled, labels = measure.label(pic_skel,
                                                   return_num = True,
                                                   connectivity = 2)
-        regionprops = measure.regionprops(pic_skel_labelled, operative_pic)
+        regionprops = measure.regionprops(pic_skel_labelled, filo_pic)
         coords_dict, bbox_dict = {},{}
         label_list, pixel_ct, centroid_list = [],[],[]
         for region in regionprops:
