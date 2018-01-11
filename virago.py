@@ -376,8 +376,8 @@ if pgm_toggle.lower() in ('yes', 'y'):
             filo_toggle = True
             if filo_toggle is True:
                 print("\nAnalyzing filaments...\n")
-                filo_pic = np.ma.array(pic3D_rescale[high_count], mask = full_mask)
-                masked_pic_orig = np.ma.array(pic3D_orig[high_count], mask = full_mask)
+                filo_pic = np.ma.array(pic3D_rescale[mid_pic], mask = full_mask)
+                masked_pic_orig = np.ma.array(pic3D_orig[mid_pic], mask = full_mask)
 
                 pic_binary, binary_props = ebc.filo_binarize(filo_pic, masked_pic_orig)
                 binary_df, bbox_list = ebc.filo_binary_quant(binary_props,
