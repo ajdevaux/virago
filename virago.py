@@ -390,24 +390,29 @@ if pgm_toggle.lower() in ('yes', 'y'):
                     binskel_df = ebc.boxcheck_merge(skel_df, binary_df,
                                              pointcol = 'centroid_skel',
                                              boxcol = 'bbox_verts')
+                    if not binskel_df.empty:
+                        binskel_df.sort_values('pixel_ct', kind = 'quicksort', inplace = True)
+                        binskel_df.drop_duplicates(subset = 'label_skel', keep = 'last',
+                                                   inplace = True)
+                        binskel_df.reset_index(drop = True, inplace = True)
 
-                    binskel_df.sort_values('pixel_ct', kind = 'quicksort', inplace = True)
-                    binskel_df.drop_duplicates(subset = 'label_skel', keep = 'last', inplace = True)
-                    binskel_df.reset_index(drop = True, inplace = True)
-
-                    filament_df = ebc.boxcheck_merge(particle_df, binskel_df,
-                                                pointcol = 'coords_yx',
-                                                boxcol = 'bbox_verts')
-
-                    filament_df.sort_values('pc', kind = 'quicksort', inplace = True)
-                    filament_df.drop_duplicates(subset = 'label_skel', keep = 'last', inplace = True)
-
-                    filament_df.to_csv('foo.csv')
-                    filament_count = len(filament_df)
+                        filament_df = ebc.boxcheck_merge(particle_df, binskel_df,
+                                                    pointcol = 'coords_yx',
+                                                    boxcol = 'bbox_verts')
+                        if not filament_df.empty:
+                            filament_df.sort_values('pc', kind = 'quicksort', inplace = True)
+                            filament_df.drop_duplicates(subset = 'label_skel', keep = 'last',
+                                                        inplace = True)
+                            filament_df.reset_index(drop = True, inplace = True)
+                            filament_df.to_csv(vcount_dir + '/' + png + '.filocount.csv')
+                            filament_count = len(filament_df)
+                        else: filament_count = 0
+                    else: filament_count = 0
                 else: filament_count = 0
 
             particle_count = len(particle_df)
             perc_fil = filament_count/particle_count*100
+            total_particles = particle_count + filament_count
             print("\nNon-filamentous particles counted: %d \n\
                      Filaments counted: %d \n\
                      Percent filaments: %.2f \n" % (particle_count, filament_count, perc_fil)
@@ -417,24 +422,27 @@ if pgm_toggle.lower() in ('yes', 'y'):
             with open(vcount_dir + '/' + png + '.vdata.txt', 'w') as vdata_file:
                 vdata_file.write("filename: %s \n\
                                   area_sqmm: %f \n\
-                                  particle_count: %d \n\
-                                  filament_count %d \n\
+                                  non-filament_count: %d \n\
+                                  filament_count: %d \n\
+                                  total_particles: %d \n\
                                   spot_coords_xyr: %s\n\
                                   marker_coords: %s\n"
                                   % (png, area_sqmm, particle_count,
-                                     filament_count, xyr, marker_locs))
+                                     filament_count, total_particles, xyr, marker_locs))
 #---------------------------------------------------------------------------------------------#
         ####Processed Image Renderer
 
             pic_to_show = pic3D_rescale[high_count]
 
-            ebc.processed_image_viewer(image = pic_to_show,
-                                       DFrame = particle_df,
+            ebc.processed_image_viewer(pic_to_show,
+                                       particle_df = particle_df,
                                        spot_coords = xyr,
                                        res = pix_per_micron,
+                                       filament_df = filament_df,
                                        markers = marker_locs,
                                        show_particles = True,
                                        show_markers = True,
+                                       show_filaments = True,
                                        chip_name = chip_name,
                                        im_name = png,
                                        show_image = False)

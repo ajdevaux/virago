@@ -139,15 +139,6 @@ def spot_finder(im, canny_sig = 2):
     print(xyr)
     return xyr, pic_canny
 #*********************************************************************************************#
-# def masker_3D(im3D, disk_mask):
-#     """Masks areas for all images in the stack outside of the antibody spot,
-#     and within 5 pixels of the image border."""
-#     border_mask = 5
-#     for image in im3D:
-#         image[0:border_mask,:], image[-(border_mask):,:] = image.max(), image.max()
-#         image[:,0:border_mask], image[:,-(border_mask):] = image.max(), image.max()
-#         image[disk_mask] = image.max()
-#*********************************************************************************************#
 def better_masker_3D(pic3D, mask, filled = False):
     pic3D_masked = np.ma.empty_like(pic3D)
     pic3D_filled = np.empty_like(pic3D)
@@ -275,8 +266,8 @@ def color_mixer(zlen,c1,c2,c3,c4):
         color_list = ['white']
     return color_list
 #*********************************************************************************************#
-def circle_particles(DFrame, axes):
-    z_list = [z for z in list(set(DFrame.z))]# if str(z).isdigit()]
+def circle_particles(particle_df, axes):
+    z_list = [z for z in list(set(particle_df.z))]# if str(z).isdigit()]
     zlen = len(z_list)
     dark_red = (0.645, 0, 0.148); pale_yellow = (0.996, 0.996, 0.746)
     pale_blue = (0.875, 0.949, 0.969); dark_blue = (0.191, 0.211, 0.582)
@@ -286,16 +277,16 @@ def circle_particles(DFrame, axes):
     hist_max = 6
     for c, zslice in enumerate(z_list):
         circ_color = blueflame_cm[c]
-        y = DFrame.loc[DFrame.z == zslice].y.reset_index(drop = True)
-        x = DFrame.loc[DFrame.z == zslice].x.reset_index(drop = True)
-        pc = DFrame.loc[DFrame.z == zslice].pc.reset_index(drop = True)
+        y = particle_df.loc[particle_df.z == zslice].y.reset_index(drop = True)
+        x = particle_df.loc[particle_df.z == zslice].x.reset_index(drop = True)
+        pc = particle_df.loc[particle_df.z == zslice].pc.reset_index(drop = True)
         try:
             if max(pc) > hist_max: hist_max = max(pc)
         except: ValueError
-        crad = 2.5
-        try:
-            if max(pc) > 25: crad = 0.25
-        except: ValueError
+        crad = 2
+        # try:
+        #     if max(pc) > 25: crad = 0.25
+        # except: ValueError
         pc_hist.append(np.array(pc))
         for i in range(0,len(pc)):
             point = plt.Circle((x[i], y[i]), pc[i] * crad,
@@ -326,10 +317,12 @@ def circle_particles(DFrame, axes):
     plt.yticks(size = 10, color = 'k')
     plt.ylabel("PARTICLE COUNT", color = 'k')
 #*********************************************************************************************#
-def processed_image_viewer(image, DFrame, spot_coords, res,
+def processed_image_viewer(image, particle_df, spot_coords, res,
+                            filament_df = pd.DataFrame([]),
                             cmap = 'gray', dpi = 96, markers = [],
                             chip_name = "", im_name = "",
                             show_particles = True, show_fibers = False,
+                            show_filaments = False,
                             show_markers = True, show_info = False,
                             show_image = True, scale = 15,
                             crosshairs = False, invert = False):
@@ -366,24 +359,41 @@ def processed_image_viewer(image, DFrame, spot_coords, res,
                  color = 'red', fontsize = '20', horizontalalignment = 'left')
 
     if show_particles == True:
-         circle_particles(DFrame, axes)
+         circle_particles(particle_df, axes)
     if show_fibers == True:
-        def fiber_points(DFrame, axes):
-            for v1 in DFrame.vertex1:
+        def fiber_points(particle_df, axes):
+            for v1 in particle_df.vertex1:
                 v1point = plt.Circle((v1[1], v1[0]), 0.5,
-                                    color = 'red', linewidth = 0,
-                                    fill = True, alpha = 1)
+                                      color = 'red', linewidth = 0,
+                                      fill = True, alpha = 1)
                 axes.add_patch(v1point)
-            for v2 in DFrame.vertex2:
+            for v2 in particle_df.vertex2:
                 v2point = plt.Circle((v2[1], v2[0]), 0.5,
-                                    color = 'm', linewidth = 0,
-                                    fill = True, alpha = 1)
+                                      color = 'm', linewidth = 0,
+                                      fill = True, alpha = 1)
                 axes.add_patch(v2point)
-            for centroid in DFrame.centroid:
+            for centroid in particle_df.centroid:
                 centpoint = plt.Circle((centroid[1], centroid[0]), 2,
                                         color = 'g', fill = False, alpha = 1)
                 axes.add_patch(centpoint)
-        fiber_points(DFrame, axes)
+        fiber_points(particle_df, axes)
+    if (show_filaments == True) & (not filament_df.empty):
+        for v1 in filament_df.vertex1:
+            v1point = plt.Circle((v1[1], v1[0]), 0.5,
+                                  color = 'red', linewidth = 0,
+                                  fill = True, alpha = 1)
+            axes.add_patch(v1point)
+        for v2 in filament_df.vertex2:
+            v2point = plt.Circle((v2[1], v2[0]), 0.5,
+                                  color = 'm', linewidth = 0,
+                                  fill = True, alpha = 1)
+            axes.add_patch(v2point)
+        for box in filament_df.bbox_verts:
+            low_left_xy = (box[3][1]-1, box[3][0]-1)
+            h = box[0][0] - box[2][0]
+            w = box[1][1] - box[0][1]
+            filobox = plt.Rectangle(low_left_xy, w, h, fill = False, ec = 'm', lw = 1)
+            axes.add_patch(filobox)
 
     if show_markers == True:
         for coords in markers:
