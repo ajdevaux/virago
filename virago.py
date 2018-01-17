@@ -9,7 +9,7 @@ import pandas as pd
 import numpy as np
 import seaborn as sns
 from scipy import stats
-from skimage import exposure, feature, io, transform, filters, measure
+from skimage import exposure, feature, io, transform, filters, measure, morphology
 import glob, os, json, sys, math, warnings
 import ebovchan as ebc
 
@@ -29,10 +29,12 @@ os.chdir(iris_path.strip('"'))
 
 txt_list = sorted(glob.glob('*.txt'))
 pgm_list = sorted(glob.glob('*.pgm'))
+pgm_set = set([".".join(file.split(".")[:3]) for file in pgm_list])
 csv_list = sorted(glob.glob('*.csv'))
 xml_list = sorted(glob.glob('*/*.xml'))
 if not xml_list: xml_list = sorted(glob.glob('../*/*.xml'))
 chip_name = pgm_list[0].split(".")[0]
+bin_selem = np.ones((3,3), dtype=int)
 
 mirror_file = str(glob.glob('*000.pgm')).strip("'[]'")
 if mirror_file:
@@ -62,6 +64,7 @@ else:
 
 if not os.path.exists('../virago_output/'+ chip_name): os.makedirs('../virago_output/' + chip_name)
 vcount_dir = '../virago_output/'+ chip_name + '/vcounts'
+filo_dir = '../virago_output/'+ chip_name + '/vcounts'
 if not os.path.exists(vcount_dir):
     os.makedirs(vcount_dir)
 
@@ -121,36 +124,20 @@ spot_to_scan = 1
 pgm_toggle = input("\nPGM files exist. Do you want scan them for particles? (y/[n])\n"
                          + "WARNING: This will take a long time!\t")
 if pgm_toggle.lower() in ('yes', 'y'):
-    #image_detail_toggle = input("Do you want to render image processing details? y/[n]?\t")
     startTime = datetime.now()
-    pgm_set = set([".".join(file.split(".")[:3]) for file in pgm_list])
-
     while spot_to_scan <= spot_counter:
         pass_per_spot_list = sorted([file for file in pgm_set
                                     if int(file.split(".")[1]) == spot_to_scan])
         passes_per_spot = len(pass_per_spot_list)
         scan_range = range(0,passes_per_spot,1)
-        if passes_per_spot != pass_counter:
-            print("Missing pgm files... ")
-            scans_counted = [int(file.split(".")[-1]) for file in pass_per_spot_list]
-            scan_set = set(range(1,pass_counter+1))
-            missing_df = pd.DataFrame(np.zeros(shape = (1,6)),
-                                 columns = ['y', 'x', 'r','z', 'pc', 'sdm'])
-            missing_csvs = scan_set.difference(scans_counted)
-            for item in missing_csvs:
-                if spot_to_scan < 10:
-                    missing_scan = chip_name+'.00'+str(spot_to_scan)+'.00'+str(item)
-                else:
-                    missing_scan = chip_name+'.0'+str(spot_to_scan)+'.0'+str(item)
-                missing_df.to_csv(vcount_dir+ '/' + missing_scan + '.vcount.csv')
-                with open(vcount_dir + '/' + missing_scan + '.vdata.txt', 'w') as vdata_file:
-                    vdata_file.write("filename: %s \narea_sqmm: %d \nparticle_count: %d"
-                                     % (missing_scan, 0, 0))
-                print("Writing blank data files for %s" % missing_scan)
 
+        if passes_per_spot != pass_counter:
+
+            ebc.missing_pgm_fixer(spot_to_scan, pass_counter, pass_per_spot_list,
+                                  chip_name, vcount_dir)
         spot_to_scan += 1
-        for x in scan_range:
-            scan_list = [file for file in pgm_list if file.startswith(pass_per_spot_list[x])]
+        for scan in scan_range:
+            scan_list = [file for file in pgm_list if file.startswith(pass_per_spot_list[scan])]
             dpi = 96
             if not os.path.exists('../virago_output/'+ chip_name):
                 os.makedirs('../virago_output/' + chip_name)
@@ -182,10 +169,13 @@ if pgm_toggle.lower() in ('yes', 'y'):
 
             marker_locs, marker_mask = ebc.marker_finder(im = pic3D_norm[mid_pic],
                                                          marker = IRISmarker,
-                                                         thresh = 0.8,
+                                                         thresh = 0.85,
                                                          gen_mask = True)
 
             pic3D_clahe = ebc.clahe_3D(pic3D_norm)##UserWarning silenced
+
+            pic3D_clahe_masked = ebc.better_masker_3D(pic3D_clahe, marker_mask,
+                                                      filled = True, fill_val = 0)
 
             pic3D_rescale = ebc.rescale_3D(pic3D_clahe)
 
@@ -193,7 +183,7 @@ if pgm_toggle.lower() in ('yes', 'y'):
 
             width = col - xyr[0]
             height = row - xyr[1]
-            rad = xyr[2] - 20
+            rad = xyr[2] - 50
             disk_mask = (width**2 + height**2 > rad**2)
             full_mask = disk_mask + marker_mask
 
@@ -219,8 +209,7 @@ if pgm_toggle.lower() in ('yes', 'y'):
                                            im_name = png)
 
 
-            particle_df = ebc.particle_quant_3D(pic3D_orig, vis_blobs)
-
+            particle_df = ebc.particle_quant_3D(pic3D_orig, vis_blobs, std_bg_thresh = 700)
 
             particle_df, rounding_cols = ebc.coord_rounder(particle_df, val = 10)
 
@@ -230,6 +219,7 @@ if pgm_toggle.lower() in ('yes', 'y'):
 
             slice_counts = particle_df.z.value_counts()
             high_count = int(slice_counts.index[0] - 1)
+            print("\nSlice with highest count: %d" % (high_count))
 
 #---------------------------------------------------------------------------------------------#
             ### Fluorescent File Processer WORK IN PRORGRESS
@@ -373,45 +363,78 @@ if pgm_toggle.lower() in ('yes', 'y'):
                     plt.clf(); plt.close('all')
 
 #---------------------------------------------------------------------------------------------#
-            filo_toggle = True
-            if filo_toggle is True:
-                print("\nAnalyzing filaments...\n")
-                filo_pic = np.ma.array(pic3D_rescale[mid_pic], mask = full_mask)
-                masked_pic_orig = np.ma.array(pic3D_orig[mid_pic], mask = full_mask)
+            fira_toggle = True
+            if fira_toggle is True:
+                filo_dir = '../virago_output/'+ chip_name + '/filo'
+                if not os.path.exists(filo_dir):
+                    os.makedirs(filo_dir)
+                print("\nAnalyzing filaments...")
+                fira_pic = np.ma.array(pic3D_rescale[high_count], mask = full_mask)
+                masked_pic_orig = np.ma.array(pic3D_orig[high_count], mask = full_mask)
 
-                pic_binary, binary_props = ebc.filo_binarize(filo_pic, masked_pic_orig)
-                binary_df, bbox_list = ebc.filo_binary_quant(binary_props,
+                pic_binary, binary_props = ebc.fira_binarize(fira_pic, masked_pic_orig,
+                                                              thresh_scalar = 0.3)
+                pic_binary = morphology.binary_closing(pic_binary, selem = bin_selem)
+                binary_df, bbox_list = ebc.fira_binary_quant(binary_props,
                                                   pic3D_orig[high_count],
-                                                  res = pix_per_micron)
+                                                  res = pix_per_micron,
+                                                  area_filter = (6,400))
+                binary_df = binary_df[binary_df.roundness < 1]
+                binary_df.reset_index(drop = True, inplace = True)
                 if not binary_df.empty:
-                    pic_skel, skel_props = ebc.filo_skel(pic_binary, masked_pic_orig)
-                    skel_df = ebc.filo_skel_quant(skel_props, res = pix_per_micron)
+                    pic_skel, skel_props = ebc.fira_skel(pic_binary, masked_pic_orig)
+                    skel_df = ebc.fira_skel_quant(skel_props,
+                                                  res = pix_per_micron,
+                                                  area_filter = (3,100))
 
-                    binskel_df = ebc.boxcheck_merge(skel_df, binary_df,
+                    binskel_df = ebc.fira_boxcheck_merge(skel_df, binary_df,
                                              pointcol = 'centroid_skel',
                                              boxcol = 'bbox_verts')
                     if not binskel_df.empty:
-                        binskel_df.sort_values('pixel_ct', kind = 'quicksort', inplace = True)
+                        binskel_df.sort_values('area', kind = 'quicksort', inplace = True)
                         binskel_df.drop_duplicates(subset = 'label_skel', keep = 'last',
                                                    inplace = True)
                         binskel_df.reset_index(drop = True, inplace = True)
 
-                        filament_df = ebc.boxcheck_merge(particle_df, binskel_df,
+                        filament_df = ebc.fira_boxcheck_merge(particle_df, binskel_df,
                                                     pointcol = 'coords_yx',
                                                     boxcol = 'bbox_verts')
                         if not filament_df.empty:
                             filament_df.sort_values('pc', kind = 'quicksort', inplace = True)
                             filament_df.drop_duplicates(subset = 'label_skel', keep = 'last',
                                                         inplace = True)
+
                             filament_df.reset_index(drop = True, inplace = True)
-                            filament_df.to_csv(vcount_dir + '/' + png + '.filocount.csv')
+                            filament_df.to_csv(filo_dir + '/' + png + '.filocount.csv',
+                                                columns = ['centroid_bin',
+                                                          'filament_length_um',
+                                                          'roundness',
+                                                          'fira_pc',
+                                                          'vertex1',
+                                                          'vertex2',
+                                                          'area',
+                                                          'bbox_verts'])
                             filament_count = len(filament_df)
-                        else: filament_count = 0
-                    else: filament_count = 0
-                else: filament_count = 0
+                            sns.set_style('darkgrid')
+                            filo_histo = sns.distplot(filament_df.filament_length_um, bins = 33,
+                                                      norm_hist = False, kde = False,
+                                                        hist_kws={"histtype": "step",
+                                                                  "linewidth": 1,
+                                                                  "alpha": 1,
+                                                                  "range":(0,5),
+                                                                  "color":"red"})
+                            plt.title(png)
+                            plt.ylabel('Filament count')
+                            plt.savefig(filo_dir + '/' +  png + '_filo_histo.png',
+                                      bbox_inches = 'tight', pad_inches = 0.1, dpi = 300)
+                            plt.close('all')
+
+                        else: filament_count = 0; filament_df = pd.DataFrame([])
+                    else: filament_count = 0; filament_df = pd.DataFrame([])
+                else: filament_count = 0; filament_df = pd.DataFrame([])
 
             particle_count = len(particle_df)
-            perc_fil = filament_count/particle_count*100
+            perc_fil = (filament_count / (filament_count + particle_count))*100
             total_particles = particle_count + filament_count
             print("\nNon-filamentous particles counted: %d \n\
                      Filaments counted: %d \n\
@@ -429,10 +452,14 @@ if pgm_toggle.lower() in ('yes', 'y'):
                                   marker_coords: %s\n"
                                   % (png, area_sqmm, particle_count,
                                      filament_count, total_particles, xyr, marker_locs))
+
+
+
+
 #---------------------------------------------------------------------------------------------#
         ####Processed Image Renderer
 
-            pic_to_show = pic3D_rescale[high_count]
+            pic_to_show = pic3D_rescale[mid_pic]
 
             ebc.processed_image_viewer(pic_to_show,
                                        particle_df = particle_df,
@@ -454,12 +481,13 @@ if pgm_toggle.lower() in ('yes', 'y'):
 os.chdir(vcount_dir)
 
 vir_csv_list = sorted(glob.glob(chip_name +'*.vcount.csv'))
+fira_csv_list = sorted(glob.glob(chip_name +'*.filocount.csv'))
 vdata_list = sorted(glob.glob(chip_name +'*.vdata.txt'))
 total_pgms = len(iris_txt) * pass_counter
 if len(vir_csv_list) >= total_pgms:
     particle_count_vir, contrast_window, particle_dict = ebc.virago_csv_reader(chip_name,
-                                                                           vir_csv_list,
-                                                                           vir_toggle = True)
+                                                                               vir_csv_list,
+                                                                               filo_csv_list)
     area_list = []
     for file in vdata_list:
         with open(file) as f:

@@ -69,8 +69,8 @@ def update(attr, old, new):
     else:
         neg_inds = np.ones_like(pc, dtype=np.bool)
         neg_inds[inds] = False
-        hhist1, _ = np.histogram(pc[inds], bins=hedges)
-        hhist2, _ = np.histogram(pc[neg_inds], bins=hedges)
+        hhist1, __ = np.histogram(pc[inds], bins=hedges)
+        hhist2, __ = np.histogram(pc[neg_inds], bins=hedges)
 
     hh1.data_source.data["top"]   =  hhist1
     hh2.data_source.data["top"]   = -hhist2

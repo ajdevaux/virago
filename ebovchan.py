@@ -15,6 +15,23 @@ import os, json, math, warnings
 #           FUNCTIONS
 #
 #*********************************************************************************************#
+def missing_pgm_fixer(spot_to_scan, pass_counter, pass_per_spot_list, chip_name, vcount_dir):
+    print("Missing pgm files... fixing...")
+    scans_counted = [int(file.split(".")[-1]) for file in pass_per_spot_list]
+    scan_set = set(range(1,pass_counter+1))
+    missing_df = pd.DataFrame(np.zeros(shape = (1,6)),
+                         columns = ['y', 'x', 'r','z', 'pc', 'sdm'])
+    missing_csvs = scan_set.difference(scans_counted)
+    for item in missing_csvs:
+        if spot_to_scan < 10:
+            missing_scan = chip_name+'.00'+str(spot_to_scan)+'.00'+str(item)
+        else:
+            missing_scan = chip_name+'.0'+str(spot_to_scan)+'.0'+str(item)
+        missing_df.to_csv(vcount_dir+ '/' + missing_scan + '.vcount.csv')
+        with open(vcount_dir + '/' + missing_scan + '.vdata.txt', 'w') as vdata_file:
+            vdata_file.write("filename: %s \narea_sqmm: %d \nparticle_count: %d"
+                             % (missing_scan, 0, 0))
+        print("Writing blank data files for %s" % missing_scan)
 #*********************************************************************************************#
 def image_details(fig1, fig2, fig3, pic_edge, dpi):
     bin_no = 55
@@ -139,13 +156,13 @@ def spot_finder(im, canny_sig = 2):
     print(xyr)
     return xyr, pic_canny
 #*********************************************************************************************#
-def better_masker_3D(pic3D, mask, filled = False):
+def better_masker_3D(pic3D, mask, filled = False, fill_val = np.nan):
     pic3D_masked = np.ma.empty_like(pic3D)
     pic3D_filled = np.empty_like(pic3D)
     for plane, pic in enumerate(pic3D):
         pic3D_masked[plane] = np.ma.array(pic, mask = mask)
         if filled == True:
-            pic3D_filled[plane] = pic3D_masked[plane].filled(fill_value = np.nan)
+            pic3D_filled[plane] = pic3D_masked[plane].filled(fill_value = fill_val)
 
     if filled == False:
         return pic3D_masked
@@ -174,7 +191,7 @@ def blob_detect_3D(im3D, min_sig, max_sig, thresh, im_name = ""):
 
     return total_blobs
 #*********************************************************************************************#
-def particle_quant_3D(im3D, d_blobs):
+def particle_quant_3D(im3D, d_blobs, std_bg_thresh = 1000):
     """This measures the percent contrast for every detected blob in the stack
     and filters out blobs that are on edges by setting a cutoff for standard deviation of the mean
      for measured background intensity. Blobs are now considered "particles" """
@@ -211,7 +228,7 @@ def particle_quant_3D(im3D, d_blobs):
     particle_df['coords_yx'] = coords_yx
 
     particle_df = particle_df[particle_df.pc > 0]
-    particle_df = particle_df[particle_df.std_bg < 750]
+    particle_df = particle_df[particle_df.std_bg <= std_bg_thresh]
     particle_df.reset_index(drop = True, inplace = True)
 
     if len(particle_df) == 0:
@@ -266,7 +283,7 @@ def color_mixer(zlen,c1,c2,c3,c4):
         color_list = ['white']
     return color_list
 #*********************************************************************************************#
-def circle_particles(particle_df, axes):
+def _circle_particles(particle_df, axes):
     z_list = [z for z in list(set(particle_df.z))]# if str(z).isdigit()]
     zlen = len(z_list)
     dark_red = (0.645, 0, 0.148); pale_yellow = (0.996, 0.996, 0.746)
@@ -353,13 +370,13 @@ def processed_image_viewer(image, particle_df, spot_coords, res,
                     linewidth = 8, color = "red")
         plt.text(y = 85, x = scale_text_xloc, s = (str(scale_micron)+ " " + r'$\mu$' + "m"),
                  color = 'red', fontsize = '20', horizontalalignment = 'center')
-        plt.text(y = 55, x = 5, s = im_name,
+        plt.text(y = 5, x = 5, s = im_name,
                  color = 'red', fontsize = '20', horizontalalignment = 'left')
-        plt.text(y = 85, x = 5, s = "Radius = " + str(true_radius)+ " " + r'$\mu$' + "m",
+        plt.text(y = 35, x = 5, s = "Radius = " + str(true_radius)+ " " + r'$\mu$' + "m",
                  color = 'red', fontsize = '20', horizontalalignment = 'left')
 
     if show_particles == True:
-         circle_particles(particle_df, axes)
+         _circle_particles(particle_df, axes)
     if show_fibers == True:
         def fiber_points(particle_df, axes):
             for v1 in particle_df.vertex1:
@@ -372,10 +389,10 @@ def processed_image_viewer(image, particle_df, spot_coords, res,
                                       color = 'm', linewidth = 0,
                                       fill = True, alpha = 1)
                 axes.add_patch(v2point)
-            for centroid in particle_df.centroid:
-                centpoint = plt.Circle((centroid[1], centroid[0]), 2,
-                                        color = 'g', fill = False, alpha = 1)
-                axes.add_patch(centpoint)
+            # for centroid in particle_df.centroid:
+            #     centpoint = plt.Circle((centroid[1], centroid[0]), 2,
+            #                             color = 'g', fill = False, alpha = 1)
+            #     axes.add_patch(centpoint)
         fiber_points(particle_df, axes)
     if (show_filaments == True) & (not filament_df.empty):
         for v1 in filament_df.vertex1:
@@ -392,7 +409,7 @@ def processed_image_viewer(image, particle_df, spot_coords, res,
             low_left_xy = (box[3][1]-1, box[3][0]-1)
             h = box[0][0] - box[2][0]
             w = box[1][1] - box[0][1]
-            filobox = plt.Rectangle(low_left_xy, w, h, fill = False, ec = 'm', lw = 1)
+            filobox = plt.Rectangle(low_left_xy, w, h, fill = False, ec = 'm', lw = 0.5, alpha = 0.8)
             axes.add_patch(filobox)
 
     if show_markers == True:
@@ -425,27 +442,22 @@ def view_pic(image, cmap = 'gray', dpi = 96, save = False):
     plt.show()
     plt.close('all')
 #*********************************************************************************************#
-def virago_csv_reader(chip_name, csv_list, vir_toggle):
-    if vir_toggle is False:
-        min_corr = input("\nWhat is the correlation cutoff for particle count?"+
-                         " (choose value between 0.5 and 1)\t")
-        if min_corr == "": min_corr = 0.75
-        min_corr = float(min_corr)
-        min_corr_str = str("%.2F" % min_corr)
-    contrast_window = str(input("\nEnter the minimum and maximum percent contrast values," +
-                                "separated by a comma (for VSV, 0.5-6% works well)\t"))
-    contrast_window = contrast_window.split(",")
+def virago_csv_reader(chip_name, vir_csv_list, fira_csv_list):
+    contrast_window = str(input("\nEnter the minimum and maximum percent contrast values,"\
+                                "separated by a dash (for VSV, 0.5-6% works well)\t"))
+    contrast_window = contrast_window.split("-")
+
     particles_list = ([])
     particle_dict = {}
 
-    for csvfile in csv_list: ##This pulls particle data from the CSVs generated by VIRAGO
+    for csvfile in vir_csv_list: ##This pulls particle data from the CSVs generated by VIRAGO
         csv_info = csvfile.split(".")
-        csv_data = pd.read_table(
+        vir_csv_df = pd.read_table(
                                  csvfile, sep = ',', skiprows = [0],
-                                 error_bad_lines = False, usecols = [1,2,3,4,5,6],
-                                 header = None, names = ('y', 'x', 'r', 'z', 'pc', 'sdm')
+                                 error_bad_lines = False, columns = ['pc'],
+                                 names = ('pc_vir')
                                 )
-        kept_particles = [val for val in csv_data.pc
+        kept_particles = [val for val in vir_csv_df.pc
                           if float(contrast_window[0]) < float(val) <= float(contrast_window[1])]
         particle_count = len(kept_particles)
 
@@ -453,6 +465,23 @@ def virago_csv_reader(chip_name, csv_list, vir_toggle):
         particle_dict[csv_id] = kept_particles
         particles_list.append(particle_count)
         print('File scanned:  '+ csvfile + '; Particles counted: ' + str(particle_count))
+
+    # for csvfile in fira_csv_list: ##This pulls particle data from the CSVs generated by VIRAGO
+    #     csv_info = csvfile.split(".")
+    #     fira_csv_df = pd.read_table(
+    #                              csvfile, sep = ',', skiprows = [0],
+    #                              error_bad_lines = False, names = ['pc'],
+    #                              names = ('pc_vir')
+    #                             )
+    #     kept_particles = [val for val in vir_csv_df.pc
+    #                       if float(contrast_window[0]) < float(val) <= float(contrast_window[1])]
+    #     particle_count = len(kept_particles)
+    #
+    #     csv_id = str(csv_info[1])+"."+str(csv_info[2])
+    #     particle_dict[csv_id] = kept_particles
+    #     particles_list.append(particle_count)
+
+
     dict_file = pd.io.json.dumps(particle_dict)
     #os.chdir('../virago_output/' + chip_name + '/')
     f = open(chip_name + '_particle_dict_vir.txt', 'w')
@@ -679,19 +708,21 @@ def average_spot_data(spot_df, spot_set, pass_counter, chip_name):
             averaged_df.to_csv(avg_spot_data, sep = ',')
     return averaged_df
 #*********************************************************************************************#
-def filo_binarize(filo_pic, pic_orig, return_props = True, show_hist = False):
+def fira_binarize(fira_pic, pic_orig, thresh_scalar, return_props = True, show_hist = False):
 
     spot_median = np.ma.median(pic_orig)
-    thresh = np.ma.median(filo_pic) + 0.3
+    thresh = np.ma.median(fira_pic) + thresh_scalar
+    if thresh > 0.8: thresh -= 0.1
 
     print("\nBinary threshold = %.3f \n" % thresh)
     if show_hist == True:
         plt.xticks(np.arange(0,1.2,0.2), size = 10)
         plt.axvline(thresh, color = 'r')
-        sns.distplot(filo_pic.ravel(), kde = False, norm_hist = True)
+        sns.distplot(fira_pic.ravel(), kde = False, norm_hist = True)
 
-    pic_binary = (filo_pic > thresh).astype(int)
+    pic_binary = (fira_pic > thresh).astype(int)
     pic_binary = pic_binary.filled(0)
+    
     if return_props == True:
         pic_binary_label = measure.label(pic_binary, connectivity = 2)
         binary_props = measure.regionprops(pic_binary_label, pic_orig, cache = True)
@@ -699,7 +730,7 @@ def filo_binarize(filo_pic, pic_orig, return_props = True, show_hist = False):
     else:
         return pic_binary
 #*********************************************************************************************#
-def filo_skel(pic_binary, pic_orig):
+def fira_skel(pic_binary, pic_orig):
     pic_skel = morphology.skeletonize(pic_binary)
     pic_skel_label, labels = measure.label(pic_skel,
                                               return_num = True,
@@ -708,8 +739,8 @@ def filo_skel(pic_binary, pic_orig):
 
     return pic_skel, skel_props
 #*********************************************************************************************#
-def measure_filament(coords_dict, res):
-    filo_lengths, vertex1, vertex2 = [],[],[]
+def _fira_measure_filament(coords_dict, res):
+    fira_lengths, vertex1, vertex2 = [],[],[]
     for key in coords_dict:
         fiber_coords = coords_dict[key]
         dist_matrix = pdist(fiber_coords, metric='cityblock')
@@ -722,18 +753,23 @@ def measure_filament(coords_dict, res):
         endpt_loc = len(farpoints[0]) // 2
         v1 = fiber_coords[farpoints[0][0]]
         v2 = fiber_coords[farpoints[0][endpt_loc]]
-        filo_lengths.append(float(round(ls_path / res, 3)))
+        fira_lengths.append(float(round(ls_path / res, 3)))
         vertex1.append(tuple(v1))
         vertex2.append(tuple(v2))
 
-    return filo_lengths, vertex1, vertex2
+    return fira_lengths, vertex1, vertex2
 #*********************************************************************************************#
-def filo_skel_quant(regionprops, res):
+def _roundness_measure(area_list, perim_list):
+    circ_ratio = 4 * np.pi
+    roundness = [(circ_ratio * (a / p**2)) for a,p in zip(area_list,perim_list)]
+    return roundness
+#*********************************************************************************************#
+def fira_skel_quant(regionprops, res, area_filter = (4,1500)):
     coords_dict = {}
     label_list, centroid_list = [],[]
     skel_df = pd.DataFrame()
     for region in regionprops:
-        if (region['area'] > 4) & (region['area'] < 500):
+        if (region['area'] > area_filter[0]) & (region['area'] < area_filter[1]):
             label_list.append(region['label'])
             coords_dict[region['label']] = region['coords']
             centroid_list.append(region['centroid'])
@@ -741,7 +777,7 @@ def filo_skel_quant(regionprops, res):
     skel_df['label_skel'] = label_list
     skel_df['centroid_skel'] = centroid_list
 
-    filo_lengths, vertex1, vertex2 = measure_filament(coords_dict, res)
+    filo_lengths, vertex1, vertex2 = _fira_measure_filament(coords_dict, res)
 
     skel_df['filament_length_um'] = filo_lengths
     skel_df['vertex1'] = vertex1
@@ -749,23 +785,27 @@ def filo_skel_quant(regionprops, res):
     skel_df.reset_index(drop = True, inplace = True)
     return skel_df
 #*********************************************************************************************#
-def filo_binary_quant(regionprops, pic, res):
-    label_list, centroid_list, pixel_ct, coords_list, bbox_list = [],[],[],[],[]
+def fira_binary_quant(regionprops, pic_orig, res, area_filter = (12,210)):
+    label_list, centroid_list, area_list, coords_list, bbox_list, perim_list = [],[],[],[],[],[]
     binary_df = pd.DataFrame()
     for region in regionprops:
-        if (region['area'] > 16) & (region['area'] < 2500):
+        if (region['area'] > area_filter[0]) & (region['area'] < area_filter[1]):
             label_list.append(region['label'])
             coords_list.append(region['coords'])
             centroid_list.append(region['centroid'])
             bbox_list.append((region['bbox'][0:2], region['bbox'][2:]))
-            pixel_ct.append(region['area'])
+            area_list.append(region['area'])
+            perim_list.append(region['perimeter'])
 
+
+
+    roundness_list = _roundness_measure(area_list, perim_list)
 
     binary_df['label_bin'] = label_list
     binary_df['centroid_bin'] = centroid_list
-    binary_df['pixel_ct'] = pixel_ct
-
-    med_intensity_list = [np.median([pic[tuple(coords)]
+    binary_df['area'] = area_list
+    binary_df['roundness'] = roundness_list
+    med_intensity_list = [np.median([pic_orig[tuple(coords)]
                           for coords in coord_array])
                           for coord_array in coords_list]
     binary_df['median_intensity'] = med_intensity_list
@@ -779,22 +819,26 @@ def filo_binary_quant(regionprops, pic, res):
         bbox_verts = np.array([top_left,top_rt,bot_rt,bot_left])
         bbox_vert_list.append(bbox_verts)
 
-        top_edge = pic[bbox[0][0],bbox[0][1]:bbox[1][1]+1]
-        bottom_edge = pic[bbox[1][0]-1,bbox[0][1]:bbox[1][1]+1]
-        rt_edge = pic[bbox[0][0]:bbox[1][0]+1,bbox[1][1]]
-        left_edge = pic[bbox[0][0]:bbox[1][0]+1,bbox[0][1]]
+        top_edge = pic_orig[bbox[0][0],bbox[0][1]:bbox[1][1]+1]
+        bottom_edge = pic_orig[bbox[1][0]-1,bbox[0][1]:bbox[1][1]+1]
+        rt_edge = pic_orig[bbox[0][0]:bbox[1][0]+1,bbox[1][1]]
+        left_edge = pic_orig[bbox[0][0]:bbox[1][0]+1,bbox[0][1]]
         all_edges = np.hstack([top_edge, bottom_edge, rt_edge, left_edge])
 
         median_bg = np.median(all_edges)
         median_bg_list.append(median_bg)
 
     binary_df['median_background'] = median_bg_list
+    binary_df['fira_pc'] = (((binary_df.median_intensity - binary_df.median_background) * 100)
+                            / binary_df.median_background)
+
     binary_df['bbox_verts'] = bbox_vert_list
+
     binary_df.reset_index(drop = True, inplace = True)
 
     return binary_df,bbox_vert_list
 #*********************************************************************************************#
-def boxcheck_merge(df1, df2, pointcol, boxcol):
+def fira_boxcheck_merge(df1, df2, pointcol, boxcol):
     new_df = pd.DataFrame()
     for i, point in enumerate(df1[pointcol]):
         arr_point = np.array(point).reshape(1,2)
