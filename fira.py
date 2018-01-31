@@ -35,6 +35,9 @@ csv_list = sorted(glob.glob('*.csv'))
 xml_list = sorted(glob.glob('*/*.xml'))
 if not xml_list: xml_list = sorted(glob.glob('../*/*.xml'))
 chip_name = pgm_list[0].split(".")[0]
+vdir = str('../virago_output/'+ chip_name)
+if not os.path.exists(vdir + '/fcounts/'):
+    os.makedirs(vdir + '/fcounts/')
 
 mirror_file = str(glob.glob('*000.pgm')).strip("'[]'")
 if mirror_file:
@@ -47,10 +50,9 @@ else: print("Mirror file absent"); mirror_toggle = False
 zslice_count = max([int(pgmfile.split(".")[3]) for pgmfile in pgm_list])
 txtcheck = [file.split(".") for file in txt_list]
 iris_txt = [".".join(file) for file in txtcheck if (len(file) >= 3) and (file[2].isalpha())]
-nv_txt = [".".join(file) for file in txtcheck if (len(file) > 3) and (file[2].isdigit())]
 
 ### Important Value
-if nv_txt: pass_counter = max([int(file[2]) for file in txtcheck if (len(file) > 3)])
+pass_counter = int(max([pgm.split(".")[2] for pgm in pgm_list]))
 ###
 
 xml_file = [file for file in xml_list if chip_name in file]
@@ -60,12 +62,12 @@ mAb_dict, __ = ebc.dejargonifier(chip_file)
 spot_counter = len([key for key in mAb_dict])##Important
 
 sample_name = input("\nPlease enter a sample descriptor (e.g. VSV-MARV@1E6 PFU/mL)\n")
-if not os.path.exists('../virago_output/'+ chip_name): os.makedirs('../virago_output/' + chip_name)
+
 ##Varibles
 
 spot_labels = []
 area_list = []
-fib_short_list, fib_med_list, fib_long_list, = [],[],[]
+fib_short_list, fib_long_list, = [],[]
 spot_data_fbg = pd.DataFrame([])
 #*********************************************************************************************#
 # Text file Parser
@@ -84,19 +86,14 @@ for txtfile in iris_txt:
 
     txtdata = pd.read_table(txtfile, sep = ':', error_bad_lines = False,
                             header = None, index_col = 0, usecols = [0, 1])
-    pass_labels = [
-                    row for row in txtdata.index
-                    if row.startswith('pass_time')
-                    ]
-    if not nv_txt: pass_counter = int(len(pass_labels)) ##If nanoViewer hasn't run on data
+
+    pass_labels = [row for row in txtdata.index if row.startswith('pass_time')]
 
     spot_idxs = pd.Series(list(txtdata.loc['spot_index']) * pass_counter)
-    pass_list = pd.Series(np.arange(1,pass_counter + 1))
+    pass_list = pd.Series(range(1,pass_counter + 1))
     spot_types = pd.Series(list([mAb_dict[int(txtfile.split(".")[1])]]) * pass_counter)
-
     pass_diff = pass_counter - len(pass_labels)
-    # if pass_diff > 0:
-    #     times_min = times_min.append(pd.Series(np.zeros(pass_diff)), ignore_index = True)
+
     print('File scanned:  ' + txtfile)
     miss_txt += 1
     spot_data_solo = pd.concat([spot_idxs.rename('spot_number').astype(int),
@@ -141,8 +138,8 @@ while spot_to_scan <= spot_counter:
     for x in scan_range:
         scan_list = [file for file in pgm_list if file.startswith(pass_per_spot_list[x])]
         dpi = 96
-        if not os.path.exists('../virago_output/'+ chip_name):
-            os.makedirs('../virago_output/' + chip_name)
+
+
 
         fluor_files = [file for file in scan_list
                        if file.endswith('A.pgm' or 'B.pgm' or 'C.pgm')]
@@ -166,22 +163,25 @@ while spot_to_scan <= spot_counter:
         pic3D_norm = pic3D / norm_scalar
         pic3D_norm[pic3D_norm > 1] = 1
 
-        marker_locs, marker_mask = ebc.marker_finder(im = pic3D_norm[0],
+        marker_locs, marker_mask = ebc.marker_finder(image = pic3D_norm[0],
                                                      marker = IRISmarker,
                                                      thresh = 0.85,
                                                      gen_mask = True)
 
         pic3D_clahe = ebc.clahe_3D(pic3D_norm)
 
-        pic3D_rescale = ebc.rescale_3D(pic3D_clahe)
+        pic3D_rescale = ebc.rescale_3D(pic3D_clahe, perc_range=(3,97))
 
 
-        if zslice_count > 1: mid_pic = int(np.ceil(zslice_count/2))
-        else: mid_pic = 0
+        if zslice_count > 1:
+            mid_pic = int(np.ceil(zslice_count/2))
+        else:
+            mid_pic = 0
 
         operative_pic = pic3D_rescale[mid_pic]
+        print("Middle image: %d" % mid_pic)
 
-        xyr, pic_canny = ebc.spot_finder(operative_pic, canny_sig = 3)
+        xyr, pic_canny = ebc.spot_finder(operative_pic, canny_sig = 3, rad_range=(450,576))
 
         width = col - xyr[0]
         height = row - xyr[1]
@@ -211,26 +211,44 @@ while spot_to_scan <= spot_counter:
         fira_pic = np.ma.array(operative_pic, mask = full_mask)
         masked_pic_orig = np.ma.array(pic3D_orig[mid_pic], mask = full_mask)
 
-        pic_binary = ebc.fira_binarize(fira_pic, masked_pic_orig,
-                                       thresh_scalar = 0.12,
-                                       return_props = False,
-                                       show_hist = True)
+        pic_binary, bin_thresh = ebc.fira_binarize(fira_pic, masked_pic_orig,
+                                                   thresh_scalar = 0.12,
+                                                   return_props = False,
+                                                   show_hist = True)
 
         pic_skel, skel_props = ebc.fira_skel(pic_binary, masked_pic_orig)
         #
         #
         fira_df = ebc.fira_skel_quant(skel_props, res = pix_per_micron)
+        fira_df.to_csv(vdir + '/fcounts/' + png + '.fcount.csv')
 
-        fib_short_list, fib_long_list = [],[]
+        # fib_short_list, fib_long_list = [],[]
         for row in fira_df.iterrows():
+            fib_short = len(fira_df[fira_df.filament_length_um < 5])
+            fib_long = len(fira_df[fira_df.filament_length_um >= 5])
+        filo_ct = len(fira_df)
 
-            fib_short = len(fira_df[fira_df.filament_length_um < 7.5])
-            fib_short_list.append(fib_short)
-            fib_long = len(fira_df[fira_df.filament_length_um >= 7.5])
-            fib_long_list.append(fib_long)
+        fib_short_list.append(fib_short)
+        fib_long_list.append(fib_long)
+        fira_df.to_csv(vdir + '/fcounts/' + png + '.vcount.csv')
+        with open(vcount_dir + '/' + png + '.fdata.txt', 'w') as fdata_file:
+            fdata_file.write( (
+                                'filename: {}\n'
+                                +'area_sqmm: {}\n'
+                                +'filament_ct: {}\n'
+                                +'middle_iamge: {}\n'
+                                +'spot_coords_xyr: {}\n'
+                                +'marker_coords: {}\n'
+                                +'binary_threshold: {}\n'
+                                ).format(png,area_sqmm,particle_count,
+                                         filo_ct,total_particles,
+                                         mid_pic, xyr, marker_locs)
+                            )
 #---------------------------------------------------------------------------------------------#
     ####Processed Image Renderer
-        pic_to_show = operative_pic
+        pic_to_show = pic_skel
+        if not os.path.exists('../virago_output/'+ chip_name + '/processed_images'):
+            os.makedirs('../virago_output/' + chip_name + '/processed_images')
         ebc.processed_image_viewer(image = pic_to_show,
                                    particle_df = fira_df,
                                    cmap = 'gray',
@@ -252,17 +270,34 @@ spot_data_fbg['area_sqmm'] = area_list
 spot_data_fbg['fibers_short'] = fib_short_list
 spot_data_fbg['fibers_long'] = fib_long_list
 
-fira_df.to_csv('../virago_output/' + chip_name +'/' + chip_name + '_spot_data_fbg.csv')
+spot_data_fbg.to_csv(vdir +'/' + chip_name + '_spot_data_fbg.csv')
 
-fira_csv_list = sorted(glob.glob('../virago_output/' + chip_name +'/' + '*.fcount.csv'))
-prescan_csvs = [csv for csv in fira_csv_list if int(csv.split(".")[2]) == 1]
-postscan_csvs = [csv for csv in fira_csv_list if int(csv.split(".")[2]) == 2]
-plasmin_csvs = [csv for csv in fira_csv_list if int(csv.split(".")[2]) == 3]
+os.chdir(vdir +'/fcounts/')
+fira_csv_list = sorted(glob.glob('*.fcount.csv'))
 
 violin_df = pd.DataFrame()
-for csvfile in prescan_csvs:
-    csv_data = pd.read_table(
-                         csvfile, sep = ',',
-                         error_bad_lines = False, usecols = ['fiber_length_um'])
+for csvfile in fira_csv_list:
+    csv_data = pd.read_csv(csvfile, header = 0, usecols = ['filament_length_um'])
+    csv_data = csv_data[csv_data['filament_length_um'] <= 10]
+    filament_ct = len(csv_data)
+    spot_num = int(csvfile.split(".")[1])
+    scan_num = int(csvfile.split(".")[2])
+
+    spot_type_list = list([mAb_dict[spot_num]] * filament_ct)
+    scan_list = list([scan_num] * filament_ct)
+    csv_data['spot_type'] = spot_type_list
+    csv_data['scan_num'] = scan_list
     violin_df = pd.concat([violin_df, csv_data], axis = 0)
-sns.violinplot(y=violin_df['fiber_length_um'])
+
+fig, ax = plt.subplots(figsize=(8, 6))
+sns.violinplot(x = 'spot_type',
+               y = 'filament_length_um',
+               hue = 'scan_num',
+               data = violin_df,
+               scale = 'count',
+               bw = 0.1,
+               palette = "Pastel1",
+               linewidth = 0.5)
+ax.set(ylim=(0, 10))
+plt.savefig('../violin.png',bbox_inches = 'tight', pad_inches = 0.1, dpi = 300)
+plt.close('all')

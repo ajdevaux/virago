@@ -7,7 +7,7 @@ os.chdir(iris_path.strip('"'))
 
 all_files = sorted(glob.glob('*.*'))
 print("There are " + str(len(all_files)) + " files.")
-files_to_rename = [file for file in all_files if (file.split(".")[2].isdigit())]
+files_to_rename = [file for file in all_files if len(file.split(".")) > 3]
 mirror_file = str(glob.glob('*000.pgm')).strip("'[]'")
 if mirror_file:
     files_to_rename.remove(mirror_file)

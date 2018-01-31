@@ -8,6 +8,7 @@ import numpy as np
 import seaborn as sns
 from scipy.spatial.distance import pdist, squareform
 from scipy.sparse import csr_matrix, csgraph
+from scipy.stats import norm, gamma
 from skimage import exposure, feature, transform, filters, util, measure, morphology
 import os, json, math, warnings
 #*********************************************************************************************#
@@ -15,25 +16,38 @@ import os, json, math, warnings
 #           FUNCTIONS
 #
 #*********************************************************************************************#
-def missing_pgm_fixer(spot_to_scan, pass_counter, pass_per_spot_list, chip_name, vcount_dir):
+def missing_pgm_fixer(spot_to_scan, pass_counter, pass_per_spot_list, chip_name, filo_toggle):
     print("Missing pgm files... fixing...")
+    vcount_dir = '../virago_output/'+ chip_name + '/vcounts'
     scans_counted = [int(file.split(".")[-1]) for file in pass_per_spot_list]
     scan_set = set(range(1,pass_counter+1))
     missing_df = pd.DataFrame(np.zeros(shape = (1,6)),
                          columns = ['y', 'x', 'r','z', 'pc', 'sdm'])
+
     missing_csvs = scan_set.difference(scans_counted)
-    for item in missing_csvs:
+    for scan in missing_csvs:
+        scan = str(scan)
+        if len(scan) == 1: scan = '00'+ scan
+        elif len(scan) == 2: scan = '0'+ scan
         if spot_to_scan < 10:
-            missing_scan = chip_name+'.00'+str(spot_to_scan)+'.00'+str(item)
+            missing_scan = chip_name +'.00' + str(spot_to_scan) + scan
         else:
-            missing_scan = chip_name+'.0'+str(spot_to_scan)+'.0'+str(item)
-        missing_df.to_csv(vcount_dir+ '/' + missing_scan + '.vcount.csv')
+            missing_scan = chip_name +'.0'+str(spot_to_scan) + scan
+        missing_df.to_csv(vcount_dir + '/' + missing_scan + '.vcount.csv')
+        if filo_toggle == True:
+            filo_dir = '../virago_output/'+ chip_name + '/filo'
+            missing_filo_df = pd.DataFrame(columns = ['centroid_bin', 'label_skel',
+                                                      'filament_length_um', 'roundness',
+                                                      'pc', 'vertex1', 'vertex2',
+                                                      'area', 'bbox_verts'])
+            missing_filo_df.to_csv(filo_dir + '/' + missing_scan + '.filocount.csv')
         with open(vcount_dir + '/' + missing_scan + '.vdata.txt', 'w') as vdata_file:
             vdata_file.write("filename: %s \narea_sqmm: %d \nparticle_count: %d"
                              % (missing_scan, 0, 0))
         print("Writing blank data files for %s" % missing_scan)
 #*********************************************************************************************#
-def image_details(fig1, fig2, fig3, pic_edge, dpi):
+def image_details(fig1, fig2, fig3, pic_edge, chip_name, png, dpi = 96):
+    """A subroutine for debugging contrast adjustment"""
     bin_no = 55
     nrows, ncols = fig1.shape
     figsize = (ncols/dpi/2, nrows/dpi/2)
@@ -51,6 +65,7 @@ def image_details(fig1, fig2, fig3, pic_edge, dpi):
     pic_cdf1, cbins1 = exposure.cumulative_distribution(fig1, bin_no)
     pic_cdf2, cbins2 = exposure.cumulative_distribution(fig2, bin_no)
     pic_cdf3, cbins3 = exposure.cumulative_distribution(fig3, bin_no)
+
     ax_hist1 = plt.axes([.05, .05, .25, .25])
     ax_cdf1 = ax_hist1.twinx()
     ax_hist2 = plt.axes([.375, .05, .25, .25])
@@ -58,29 +73,44 @@ def image_details(fig1, fig2, fig3, pic_edge, dpi):
     ax_hist3 = plt.axes([.7, .05, .25, .25])
     ax_cdf3 = ax_hist3.twinx()
 
-    pixels1, hbins1, patches1 = ax_hist1.hist(fig1.ravel(),bin_no, facecolor = 'r', normed = True)
-    pixels2, hbins2, patches2 = ax_hist2.hist(fig2.ravel(), bin_no, facecolor = 'b', normed = True)
-    pixels3, hbins3, patches3 = ax_hist3.hist(fig3.ravel(), bins = bin_no,
-                                              facecolor = 'g', normed = True)
+    # hist1, hbins1 = np.histogram(fig1.ravel(), bins = bin_no)
+    # hist2, hbins2 = np.histogram(fig2.ravel(), bins = bin_no)
+    # hist3, hbins3 = np.histogram(fig3.ravel(), bins = bin_no)
+    fig1r = fig1.ravel(); fig2r = fig2.ravel(); fig3r = fig3.ravel()
+
+    hist1, hbins1, __ = ax_hist1.hist(fig1r, bin_no, facecolor = 'r', normed = True)
+    hist2, hbins2, __ = ax_hist2.hist(fig2r, bin_no, facecolor = 'b', normed = True)
+    hist3, hbins3, __ = ax_hist3.hist(fig3r, bin_no, facecolor = 'g', normed = True)
+    # hist_dist1 = scipy.stats.rv_histogram(hist1)
 
     ax_hist1.patch.set_alpha(0); ax_hist2.patch.set_alpha(0); ax_hist3.patch.set_alpha(0)
 
     ax_cdf1.plot(cbins1, pic_cdf1, color = 'w')
     ax_cdf2.plot(cbins2, pic_cdf2, color = 'c')
     ax_cdf3.plot(cbins3, pic_cdf3, color = 'y')
+
+    bin_centers2 = 0.5*(hbins2[1:] + hbins2[:-1])
+    m2, s2 = norm.fit(fig2r)
+    pdf2 = norm.pdf(bin_centers2, m2, s2)
+    ax_hist2.plot(bin_centers2, pdf2, color = 'm')
+    mean, var, skew, kurt = gamma.stats(fig2r, moments='mvsk')
+    print(mean, var, skew, kurt)
+
     ax_hist1.set_title("Normalized", color = 'r')
     ax_hist2.set_title("CLAHE Equalized", color = 'b')
     ax_hist3.set_title("Contrast Stretched", color = 'g')
-    ax_hist1.set_ylim([0,max(pixels1)])
-    ax_hist3.set_ylim([0,max(pixels3)])
+    ax_hist1.set_ylim([0,max(hist1)])
+    ax_hist3.set_ylim([0,max(hist3)])
     ax_hist1.set_xlim([np.median(fig1)-0.25,np.median(fig1)+0.25])
     #ax_cdf1.set_ylim([0,1])
     ax_hist2.set_xlim([np.median(fig2)-0.5,np.median(fig2)+0.5])
     ax_hist3.set_xlim([0,1])
+    plt.savefig('../virago_output/' + chip_name + '/processed_images/' + png + '_image_details.png',
+                dpi = dpi)
     plt.show()
-    #plt.savefig('../virago_output/' + chip_name + '/' + pgmfile + '_clahe_norm.png', dpi = dpi)
+
     plt.close('all')
-    return hbins1, pic_cdf1
+    return hbins2, pic_cdf1
 #*********************************************************************************************#
 def display(im3D, cmap = "gray", step = 1):
     """Debugging function for viewing all image files in a stack"""
@@ -98,17 +128,18 @@ def display(im3D, cmap = "gray", step = 1):
     plt.show()
     plt.close('all')
 #*********************************************************************************************#
-def marker_finder(im, marker, thresh = 0.9, gen_mask = False):
+def marker_finder(image, marker, thresh = 0.9, gen_mask = False):
     """This locates the "backwards-L" shapes in the IRIS images"""
-    marker_match = feature.match_template(im, marker, pad_input = True)
+    marker_match = feature.match_template(image, marker, pad_input = True)
     locs = feature.peak_local_max(marker_match,
                                   min_distance = 100,
                                   threshold_rel = thresh,
                                   exclude_border = False)
     mask = None
     if gen_mask == True:
-        mask = np.zeros((1200,1920), dtype = bool)
+        mask = np.zeros(shape = image.shape, dtype = bool)
         h, w = marker.shape
+        h += 5; w += 5
         for coords in locs:
             marker_w = (np.arange(coords[1] - w/2,coords[1] + w/2)).astype(int)
             marker_h = (np.arange(coords[0] - h/2,coords[0] + h/2)).astype(int)
@@ -116,50 +147,61 @@ def marker_finder(im, marker, thresh = 0.9, gen_mask = False):
 
     return locs, mask
 #*********************************************************************************************#
-def clahe_3D(im3D, cliplim = 0.003):
+def clahe_3D(img_stack, cliplim = 0.003, recs = 0):
     """Performs the contrast limited adaptive histogram equalization on the stack of images"""
-    im3D_clahe = np.empty_like(im3D).astype('float64')
+    # shape =
+    # mid_pic = int(np.ceil(shape[0]/2))
+    if img_stack.ndim == 2: img_stack = np.array([img_stack])
+
+    img3D_clahe = np.empty_like(img_stack).astype('float64')
     with warnings.catch_warnings():
         warnings.simplefilter("ignore")
-        warnings.warn(UserWarning)##Images are not acutally converted to uint16?
-        for plane, image in enumerate(im3D):
-                im3D_clahe[plane] = exposure.equalize_adapthist(image, clip_limit = cliplim)
+        warnings.warn(UserWarning)##Images are acutally converted to uint16 for some reason
+        for plane,image in enumerate(img_stack):
+            img3D_clahe[plane] = exposure.equalize_adapthist(image, clip_limit = cliplim)
+            image_r = img3D_clahe[plane].ravel()
+                # hist1, hbins1 = np.histogram(image_r, bins = 55)
+                # mean, std = norm.fit(image_r)
+                # mean, var, skew, kurt = norm.stats(moments='mvsk')
 
-    return im3D_clahe
+                # var = np.var(img3D_clahe[plane])
+                # print(var)
+                # if var < 0.012:
+                #     recs += 1
+                #     print("Recursing %d" % recs)
+                #     mult = 3.3 - (0.3 * recs)
+                #     cliplim = round(cliplim * mult,3)
+                #     img3D_clahe[plane] = clahe_3D(img3D_clahe[plane], cliplim, recs = recs)
+                #
+                # else: print("Sweet Distribution!")
+    return img3D_clahe
 #*********************************************************************************************#
-def rescale_3D(im3D):
+def rescale_3D(img_stack, perc_range = (2,98)):
     """Streches the histogram for all images in stack to further increase contrast"""
-    im3D_rescale = np.empty_like(im3D)
-    for plane, image in enumerate(im3D):
-        p1,p2 = np.percentile(image, (2, 98))
-        print(p2 - p1)
-        # if p2 - p1 > 0.12:
-        #     print("Histogram off - adjusting...")
-        #     newscale = (p2 - p1) / 3
-        #     p1 = np.median(image) - (newscale / 2)
-        #     p2 = np.median(image) + (newscale / 2)
-        #     print(str(newscale)+"\n")
-        im3D_rescale[plane] = exposure.rescale_intensity(image, in_range=(p1,p2))
-    return im3D_rescale
+    img3D_rescale = np.empty_like(img_stack)
+    for plane, image in enumerate(img_stack):
+        p1,p2 = np.percentile(image, perc_range)
+        img3D_rescale[plane] = exposure.rescale_intensity(image, in_range=(p1,p2))
+    return img3D_rescale
 #*********************************************************************************************#
-def spot_finder(im, canny_sig = 2):
+def spot_finder(image, canny_sig = 2, rad_range = (525, 651)):
     """Locates the antibody spot convalently bound to the SiO2 substrate
     where particles of interest should be accumulating"""
-    nrows, ncols = im.shape
-    pic_canny = feature.canny(im, sigma = canny_sig)
-    hough_radius = range(525, 651, 25)
+    nrows, ncols = image.shape
+    pic_canny = feature.canny(image, sigma = canny_sig)
+    hough_radius = range(rad_range[0], rad_range[1], 25)
     hough_res = transform.hough_circle(pic_canny, hough_radius)
     accums, cx, cy, rad = transform.hough_circle_peaks(hough_res, hough_radius,
                                                    total_num_peaks=1)
-
+    print(cx, cy, rad)
     xyr = tuple((int(cx), int(cy), int(rad)))
-    print(xyr)
+    print("Spot center coordinates (row, column, radius): %s" % (xyr,))
     return xyr, pic_canny
 #*********************************************************************************************#
-def better_masker_3D(pic3D, mask, filled = False, fill_val = np.nan):
-    pic3D_masked = np.ma.empty_like(pic3D)
-    pic3D_filled = np.empty_like(pic3D)
-    for plane, pic in enumerate(pic3D):
+def better_masker_3D(image_stack, mask, filled = False, fill_val = np.nan):
+    pic3D_masked = np.ma.empty_like(image_stack)
+    pic3D_filled = np.empty_like(image_stack)
+    for plane, pic in enumerate(image_stack):
         pic3D_masked[plane] = np.ma.array(pic, mask = mask)
         if filled == True:
             pic3D_filled[plane] = pic3D_masked[plane].filled(fill_value = fill_val)
@@ -169,12 +211,12 @@ def better_masker_3D(pic3D, mask, filled = False, fill_val = np.nan):
     else:
         return pic3D_filled
 #*********************************************************************************************#
-def blob_detect_3D(im3D, min_sig, max_sig, thresh, im_name = ""):
+def blob_detect_3D(image_stack, min_sig, max_sig, thresh, im_name = ""):
     """This is the primary function for detecting "blobs" in the stack of IRIS images.
     Uses the Difference of Gaussians algorithm"""
     total_blobs = np.empty(shape = (0,4))
 
-    for plane, image in enumerate(im3D):
+    for plane, image in enumerate(image_stack):
         blobs = feature.blob_dog(image, min_sigma = min_sig, max_sigma = max_sig,
                                  threshold = thresh, overlap = 0
                                 )
@@ -191,21 +233,20 @@ def blob_detect_3D(im3D, min_sig, max_sig, thresh, im_name = ""):
 
     return total_blobs
 #*********************************************************************************************#
-def particle_quant_3D(im3D, d_blobs, std_bg_thresh = 1000):
+def particle_quant_3D(image_stack, d_blobs, std_bg_thresh = 1000):
     """This measures the percent contrast for every detected blob in the stack
     and filters out blobs that are on edges by setting a cutoff for standard deviation of the mean
      for measured background intensity. Blobs are now considered "particles" """
     perc_contrast, std_background, coords_yx = [],[],[]
     sqrt_2 = math.sqrt(2)
-    # med_list = [np.ma.median(image) for image in im3D]
     for i, blob in enumerate(d_blobs):
         y, x, sigma, z_name = d_blobs[i]
         r = int(np.ceil(sigma * sqrt_2))
         if r < 3: r = 3
         z_loc = z_name-1
 
-        point_lum = im3D[z_loc , y , x]
-        local = im3D[z_loc , y-(r):y+(r+1) , x-(r):x+(r+1)]
+        point_lum = image_stack[z_loc , y , x]
+        local = image_stack[z_loc , y-(r):y+(r+1) , x-(r):x+(r+1)]
 
         try: local_circ = np.hstack([local[0,1:-1],local[:,0],local[-1,1:-1],local[:,-1]])
         except IndexError:
@@ -335,7 +376,7 @@ def _circle_particles(particle_df, axes):
     plt.ylabel("PARTICLE COUNT", color = 'k')
 #*********************************************************************************************#
 def processed_image_viewer(image, particle_df, spot_coords, res,
-                            filament_df = pd.DataFrame([]),
+                            filo_df = pd.DataFrame([]),
                             cmap = 'gray', dpi = 96, markers = [],
                             chip_name = "", im_name = "",
                             show_particles = True, show_fibers = False,
@@ -394,18 +435,18 @@ def processed_image_viewer(image, particle_df, spot_coords, res,
             #                             color = 'g', fill = False, alpha = 1)
             #     axes.add_patch(centpoint)
         fiber_points(particle_df, axes)
-    if (show_filaments == True) & (not filament_df.empty):
-        for v1 in filament_df.vertex1:
+    if (show_filaments == True) & (not filo_df.empty):
+        for v1 in filo_df.vertex1:
             v1point = plt.Circle((v1[1], v1[0]), 0.5,
                                   color = 'red', linewidth = 0,
                                   fill = True, alpha = 1)
             axes.add_patch(v1point)
-        for v2 in filament_df.vertex2:
+        for v2 in filo_df.vertex2:
             v2point = plt.Circle((v2[1], v2[0]), 0.5,
                                   color = 'm', linewidth = 0,
                                   fill = True, alpha = 1)
             axes.add_patch(v2point)
-        for box in filament_df.bbox_verts:
+        for box in filo_df.bbox_verts:
             low_left_xy = (box[3][1]-1, box[3][0]-1)
             h = box[0][0] - box[2][0]
             w = box[1][1] - box[0][1]
@@ -421,8 +462,6 @@ def processed_image_viewer(image, particle_df, spot_coords, res,
         plt.axhline(y = cy, color = 'red', linewidth = 3)
         plt.axvline(x = cx, color = 'red', linewidth = 3)
 
-    if not os.path.exists('../virago_output/'+ chip_name + '/processed_images'):
-        os.makedirs('../virago_output/' + chip_name + '/processed_images')
     plt.savefig('../virago_output/' + chip_name + '/processed_images/' + im_name +'.png', dpi = dpi)
     print("Processed image generated: " + im_name + ".png")
     if show_image == True:
@@ -442,54 +481,21 @@ def view_pic(image, cmap = 'gray', dpi = 96, save = False):
     plt.show()
     plt.close('all')
 #*********************************************************************************************#
-def virago_csv_reader(chip_name, vir_csv_list, fira_csv_list):
-    contrast_window = str(input("\nEnter the minimum and maximum percent contrast values,"\
-                                "separated by a dash (for VSV, 0.5-6% works well)\t"))
-    contrast_window = contrast_window.split("-")
-
-    particles_list = ([])
+def vir_csv_reader(chip_name, csv_list, cont_window):
+    particle_list = ([])
     particle_dict = {}
-
-    for csvfile in vir_csv_list: ##This pulls particle data from the CSVs generated by VIRAGO
+    min_cont = float(cont_window[0])
+    max_cont = float(cont_window[1])
+    for csvfile in csv_list: ##This pulls particle data from the CSVs generated by VIRAGO
+        csv_df = pd.read_csv(csvfile, error_bad_lines = False, header = 0)
+        kept_vals = [val for val in csv_df.pc if min_cont < val <= max_cont]
+        val_count = len(kept_vals)
         csv_info = csvfile.split(".")
-        vir_csv_df = pd.read_table(
-                                 csvfile, sep = ',', skiprows = [0],
-                                 error_bad_lines = False, columns = ['pc'],
-                                 names = ('pc_vir')
-                                )
-        kept_particles = [val for val in vir_csv_df.pc
-                          if float(contrast_window[0]) < float(val) <= float(contrast_window[1])]
-        particle_count = len(kept_particles)
-
         csv_id = str(csv_info[1])+"."+str(csv_info[2])
-        particle_dict[csv_id] = kept_particles
-        particles_list.append(particle_count)
-        print('File scanned:  '+ csvfile + '; Particles counted: ' + str(particle_count))
-
-    # for csvfile in fira_csv_list: ##This pulls particle data from the CSVs generated by VIRAGO
-    #     csv_info = csvfile.split(".")
-    #     fira_csv_df = pd.read_table(
-    #                              csvfile, sep = ',', skiprows = [0],
-    #                              error_bad_lines = False, names = ['pc'],
-    #                              names = ('pc_vir')
-    #                             )
-    #     kept_particles = [val for val in vir_csv_df.pc
-    #                       if float(contrast_window[0]) < float(val) <= float(contrast_window[1])]
-    #     particle_count = len(kept_particles)
-    #
-    #     csv_id = str(csv_info[1])+"."+str(csv_info[2])
-    #     particle_dict[csv_id] = kept_particles
-    #     particles_list.append(particle_count)
-
-
-    dict_file = pd.io.json.dumps(particle_dict)
-    #os.chdir('../virago_output/' + chip_name + '/')
-    f = open(chip_name + '_particle_dict_vir.txt', 'w')
-    f.write(dict_file)
-    f.close()
-    print("Particle dictionary file generated")
-
-    return particles_list, contrast_window, particle_dict
+        particle_dict[csv_id] = kept_vals
+        particle_list.append(val_count)
+        print('File scanned:  '+ csvfile + '; Particles counted: ' + str(val_count))
+    return particle_list, particle_dict
 #*********************************************************************************************#
 def nano_csv_reader(chip_name, spot_data, csv_list):
     min_corr = input("\nWhat is the correlation cutoff for particle count?"+
@@ -578,7 +584,8 @@ def chip_file_reader(xml_file):
     return chip_file
 #*********************************************************************************************#
 def dejargonifier(chip_file):
-    """This takes antibody names from the chip file and makes them more general for easier layperson understanding. It returns two dictionaries that match spot number with antibody name."""
+    """This takes antibody names from the chip file and makes them more general for easier layperson understanding.
+    It returns two dictionaries that match spot number with antibody name."""
     jargon_dict = {
                    '13F6': 'anti-EBOVmay', '127-8': 'anti-MARV',
                    '6D8': 'anti-EBOVmak', '8.9F': 'anti-LASV',
@@ -719,16 +726,18 @@ def fira_binarize(fira_pic, pic_orig, thresh_scalar, return_props = True, show_h
         plt.xticks(np.arange(0,1.2,0.2), size = 10)
         plt.axvline(thresh, color = 'r')
         sns.distplot(fira_pic.ravel(), kde = False, norm_hist = True)
+        plt.show()
+        plt.clf('all')
 
     pic_binary = (fira_pic > thresh).astype(int)
     pic_binary = pic_binary.filled(0)
-    
+
     if return_props == True:
         pic_binary_label = measure.label(pic_binary, connectivity = 2)
         binary_props = measure.regionprops(pic_binary_label, pic_orig, cache = True)
         return pic_binary, binary_props
     else:
-        return pic_binary
+        return pic_binary, thresh
 #*********************************************************************************************#
 def fira_skel(pic_binary, pic_orig):
     pic_skel = morphology.skeletonize(pic_binary)
@@ -829,7 +838,7 @@ def fira_binary_quant(regionprops, pic_orig, res, area_filter = (12,210)):
         median_bg_list.append(median_bg)
 
     binary_df['median_background'] = median_bg_list
-    binary_df['fira_pc'] = (((binary_df.median_intensity - binary_df.median_background) * 100)
+    binary_df['filo_pc'] = (((binary_df.median_intensity - binary_df.median_background) * 100)
                             / binary_df.median_background)
 
     binary_df['bbox_verts'] = bbox_vert_list
@@ -838,7 +847,7 @@ def fira_binary_quant(regionprops, pic_orig, res, area_filter = (12,210)):
 
     return binary_df,bbox_vert_list
 #*********************************************************************************************#
-def fira_boxcheck_merge(df1, df2, pointcol, boxcol):
+def fira_boxcheck_merge(df1, df2, pointcol, boxcol, dropcols = False):
     new_df = pd.DataFrame()
     for i, point in enumerate(df1[pointcol]):
         arr_point = np.array(point).reshape(1,2)
@@ -851,5 +860,25 @@ def fira_boxcheck_merge(df1, df2, pointcol, boxcol):
                 new_df = new_df.append(combo_series, ignore_index = True)
                 df1.drop([i], inplace = True)
                 break
+    if (dropcols == True) & (not new_df.empty):
+        new_df.drop(columns = ['centroid_skel',
+                               'label_bin',
+                               'median_background',
+                               'median_intensity',
+                               'pc'],
+                    inplace = True)
     return new_df
+#*********************************************************************************************#
+def no_filos(filo_dir, png):
+    filo_df = pd.DataFrame(columns = ['centroid_bin',
+                                      'label_skel',
+                                      'filament_length_um',
+                                      'roundness',
+                                      'pc',
+                                      'vertex1',
+                                      'vertex2',
+                                      'area',
+                                      'bbox_verts'])
+    filo_df.to_csv(filo_dir + '/' + png + '.filocount.csv')
+    return filo_df
 #*********************************************************************************************#
