@@ -10,13 +10,13 @@ from scipy.spatial.distance import pdist, squareform
 from scipy.sparse import csr_matrix, csgraph
 from scipy.stats import norm, gamma
 from skimage import exposure, feature, transform, filters, util, measure, morphology
-import os, json, math, warnings
+import os, json, math, warnings, sys
 #*********************************************************************************************#
 #
-#           FUNCTIONS
+#           SUBROUTINES
 #
 #*********************************************************************************************#
-def missing_pgm_fixer(spot_to_scan, pass_counter, pass_per_spot_list, chip_name, filo_toggle):
+def missing_pgm_fixer(spot_to_scan, pass_counter, pass_per_spot_list, chip_name, filo_toggle = False):
     print("Missing pgm files... fixing...")
     vcount_dir = '../virago_output/'+ chip_name + '/vcounts'
     scans_counted = [int(file.split(".")[-1]) for file in pass_per_spot_list]
@@ -27,8 +27,8 @@ def missing_pgm_fixer(spot_to_scan, pass_counter, pass_per_spot_list, chip_name,
     missing_csvs = scan_set.difference(scans_counted)
     for scan in missing_csvs:
         scan = str(scan)
-        if len(scan) == 1: scan = '00'+ scan
-        elif len(scan) == 2: scan = '0'+ scan
+        if len(scan) == 1: scan = '.00'+ scan
+        elif len(scan) == 2: scan = '.0'+ scan
         if spot_to_scan < 10:
             missing_scan = chip_name +'.00' + str(spot_to_scan) + scan
         else:
@@ -135,6 +135,9 @@ def marker_finder(image, marker, thresh = 0.9, gen_mask = False):
                                   min_distance = 100,
                                   threshold_rel = thresh,
                                   exclude_border = False)
+    locs = [tuple(coords) for coords in locs]
+    locs.sort(key = lambda coord: coord[1])
+
     mask = None
     if gen_mask == True:
         mask = np.zeros(shape = image.shape, dtype = bool)
@@ -193,9 +196,8 @@ def spot_finder(image, canny_sig = 2, rad_range = (525, 651)):
     hough_res = transform.hough_circle(pic_canny, hough_radius)
     accums, cx, cy, rad = transform.hough_circle_peaks(hough_res, hough_radius,
                                                    total_num_peaks=1)
-    print(cx, cy, rad)
     xyr = tuple((int(cx), int(cy), int(rad)))
-    print("Spot center coordinates (row, column, radius): %s" % (xyr,))
+    print("Spot center coordinates (row, column, radius): {}".format(xyr))
     return xyr, pic_canny
 #*********************************************************************************************#
 def better_masker_3D(image_stack, mask, filled = False, fill_val = np.nan):
@@ -607,6 +609,16 @@ def dejargonifier(chip_file):
         mAb_dict_rev[val].append(key)
     return mAb_dict, mAb_dict_rev
 #*********************************************************************************************#
+def sample_namer(iris_path):
+    if sys.platform == 'win32': folder_name = iris_path.split("\\")[-1]
+    elif sys.platform == 'darwin': folder_name = iris_path.split("/")[-1]
+    else: folder_name = ''
+    if len(folder_name.split("_")) == 2:
+        sample_name = folder_name.split("_")[-1]
+    else:
+        sample_name = input("\nPlease enter a sample descriptor (e.g. VSV-MARV@1E6 PFU/mL)\n")
+    return sample_name
+#*********************************************************************************************#
 def histogrammer(particle_dict, spot_counter, baselined = False):
     """Returns a DataFrame of histogram data from the particle dictionary. If baselined = True, returns a DataFrame where the histogram data has had pass 1 values subtracted for all spots"""
     baseline_histogram_df, histogram_df =  pd.DataFrame(), pd.DataFrame()
@@ -717,17 +729,17 @@ def average_spot_data(spot_df, spot_set, pass_counter, chip_name):
 #*********************************************************************************************#
 def fira_binarize(fira_pic, pic_orig, thresh_scalar, return_props = True, show_hist = False):
 
-    spot_median = np.ma.median(pic_orig)
-    thresh = np.ma.median(fira_pic) + thresh_scalar
-    if thresh > 0.8: thresh -= 0.1
+    spot_median = np.ma.median(fira_pic)
+    thresh = spot_median + thresh_scalar
 
     print("\nBinary threshold = %.3f \n" % thresh)
     if show_hist == True:
         plt.xticks(np.arange(0,1.2,0.2), size = 10)
         plt.axvline(thresh, color = 'r')
+        plt.axvline(spot_median, color = 'b')
         sns.distplot(fira_pic.ravel(), kde = False, norm_hist = True)
         plt.show()
-        plt.clf('all')
+        plt.clf()
 
     pic_binary = (fira_pic > thresh).astype(int)
     pic_binary = pic_binary.filled(0)
@@ -735,7 +747,7 @@ def fira_binarize(fira_pic, pic_orig, thresh_scalar, return_props = True, show_h
     if return_props == True:
         pic_binary_label = measure.label(pic_binary, connectivity = 2)
         binary_props = measure.regionprops(pic_binary_label, pic_orig, cache = True)
-        return pic_binary, binary_props
+        return pic_binary, binary_props, thresh
     else:
         return pic_binary, thresh
 #*********************************************************************************************#
