@@ -10,7 +10,7 @@ import numpy as np
 import seaborn as sns
 from scipy import stats
 from skimage import exposure, feature, io, transform, filters, measure, morphology
-import glob, os, json, sys, math, warnings
+import glob, os
 import ebovchan as ebc
 
 pd.set_option('display.width', 1000)
@@ -25,7 +25,8 @@ retval = os.getcwd()
 print("\nCurrent working directory is:\n %s" % retval)
 IRISmarker = io.imread('IRISmarker.tif')
 iris_path = input("\nPlease type in the path to the folder that contains the IRIS data:\n")
-os.chdir(iris_path.strip('"'))
+iris_path = iris_path.strip('"')
+os.chdir(iris_path)
 
 txt_list = sorted(glob.glob('*.txt'))
 pgm_list = sorted(glob.glob('*.pgm'))
@@ -54,13 +55,7 @@ chip_file = ebc.chip_file_reader(xml_file[0])
 mAb_dict, mAb_dict_rev = ebc.dejargonifier(chip_file)
 intro = chip_file[0]
 
-if sys.platform == 'win32': folder_name = iris_path.split("\\")[-1]
-elif sys.platform == 'darwin': folder_name = iris_path.split("/")[-1]
-else: folder_name = ''
-if len(folder_name.split("_")) == 2:
-    sample_name = folder_name.split("_")[-1]
-else:
-    sample_name = input("\nPlease enter a sample descriptor (e.g. VSV-MARV@1E6 PFU/mL)\n")
+sample_name = ebc.sample_namer(iris_path)
 
 if not os.path.exists('../virago_output/'+ chip_name): os.makedirs('../virago_output/' + chip_name)
 vcount_dir = '../virago_output/'+ chip_name + '/vcounts'
@@ -116,7 +111,7 @@ for val in mAb_dict.values():
     if val not in spot_set: spot_set.append(val)
 #*********************************************************************************************#
 # PGM Scanning
-spot_to_scan = 10
+spot_to_scan = 1
 filo_toggle = True
 #*********************************************************************************************#
 pgm_toggle = input("\nPGM files exist. Do you want scan them for particles? (y/[n])\n"
@@ -124,6 +119,7 @@ pgm_toggle = input("\nPGM files exist. Do you want scan them for particles? (y/[
 if pgm_toggle.lower() in ('yes', 'y'):
     startTime = datetime.now()
     while spot_to_scan <= spot_counter:
+
         pass_per_spot_list = sorted([file for file in pgm_set
                                     if int(file.split(".")[1]) == spot_to_scan])
         passes_per_spot = len(pass_per_spot_list)
@@ -134,9 +130,11 @@ if pgm_toggle.lower() in ('yes', 'y'):
             ebc.missing_pgm_fixer(spot_to_scan, pass_counter, pass_per_spot_list,
                                   chip_name, filo_toggle)
         spot_to_scan += 1
+        circle_dict = {}
         for scan in scan_range:
             scan_list = [file for file in pgm_list if file.startswith(pass_per_spot_list[scan])]
             dpi = 96
+
             if not os.path.exists('../virago_output/'+ chip_name):
                 os.makedirs('../virago_output/' + chip_name)
 
@@ -148,6 +146,8 @@ if pgm_toggle.lower() in ('yes', 'y'):
             scan_collection = io.imread_collection(scan_list)
             pgm_name = scan_list[0].split(".")
             png = '.'.join(pgm_name[:3])
+            spot_type = mAb_dict[int(png.split(".")[1])]
+            spot_num = int(png.split(".")[1])
             pic3D = np.array([pic for pic in scan_collection])
             pic3D_orig = pic3D.copy()
             zslice_count, nrows, ncols = pic3D.shape
@@ -194,7 +194,13 @@ if pgm_toggle.lower() in ('yes', 'y'):
             # compressed_pic = np.max(pic3D_rescale, axis = 0) - np.min(pic3D_rescale, axis = 0)
             # pic_orig_median = np.median(pic3D_orig, axis = 0)
 
-            xyr, pic_canny  = ebc.spot_finder(pic3D_rescale[mid_pic], canny_sig = 2.75, rad_range = (450, 651))
+            if spot_num not in circle_dict:
+                xyr, pic_canny = ebc.spot_finder(pic3D_rescale[mid_pic],
+                                                 canny_sig = 2.75,
+                                                 rad_range=(450,4651))
+                circle_dict[spot_num] = xyr
+            else:
+                xyr = circle_dict[spot_num]
 
             width = col - xyr[0]
             height = row - xyr[1]
@@ -386,7 +392,7 @@ if pgm_toggle.lower() in ('yes', 'y'):
                 fira_pic = np.ma.array(pic3D_rescale[mid_pic], mask = full_mask)
                 masked_pic_orig = np.ma.array(pic3D_orig[mid_pic], mask = full_mask)
 
-                pic_binary, binary_props = ebc.fira_binarize(fira_pic, masked_pic_orig,
+                pic_binary, binary_props, bin_thresh = ebc.fira_binarize(fira_pic, masked_pic_orig,
                                                               thresh_scalar = 0.385)
                 # pic_binary = morphology.binary_closing(pic_binary, selem = bin_selem)
                 binary_df, bbox_list = ebc.fira_binary_quant(binary_props,
@@ -470,6 +476,7 @@ if pgm_toggle.lower() in ('yes', 'y'):
             with open(vcount_dir + '/' + png + '.vdata.txt', 'w') as vdata_file:
                 vdata_file.write( (
                                     'filename: {}\n'
+                                    +'spot_type: {}\n'
                                     +'area_sqmm: {}\n'
                                     +'non-filo_ct: {}\n'
                                     +'filo_ct: {}\n'
@@ -477,9 +484,10 @@ if pgm_toggle.lower() in ('yes', 'y'):
                                     +'slice_high_count: {}\n'
                                     +'spot_coords_xyr: {}\n'
                                     +'marker_coords: {}\n'
-                                    ).format(png,area_sqmm,particle_count,
+                                    +'binary_thresh: {}\n'
+                                    ).format(png, spot_type, area_sqmm, particle_count,
                                              filo_ct,total_particles,
-                                             high_count, xyr, marker_locs)
+                                             high_count, xyr, marker_locs, bin_thresh)
                                 )
 
 
@@ -548,24 +556,38 @@ if len(vcount_csv_list) >= total_pgms:
     kparticle_density = np.round(np.array(particle_counts_vir) / area_list * 0.001,3)
     # kparticle_density = map(lambda p,a: round(particle_counts_vir / (area_list * 0.001),3))
     spot_df['kparticle_density'] = kparticle_density
+    valid_list = [True] * len(spot_df)
+    spot_df['valid'] = valid_list
+    spot_df.loc[spot_df.kparticle_density.isnull(), 'valid'] = False
 
     dict_file = pd.io.json.dumps(particle_dict)
-    os.chdir('..')
+    os.chdir(iris_path)
     f = open(chip_name + '_particle_dict_vir.txt', 'w')
     f.write(dict_file)
     f.close()
     print("Particle dictionary file generated")
 
 
-
 elif len(vcount_csv_list) != total_pgms:
     pgms_remaining = total_pgms - len(vcount_csv_list)
 
-os.chdir(iris_path.strip('"'))
+
 #*********************************************************************************************#
 # Histogram generator
 #####################################################################
 #--------------------------------------------------------------------
+#*********************************************************************************************#
+def spot_remover(spot_df):
+    excise_toggle = input("Would you like to remove any spots from the analysis? (y/[n])\t")
+    assert isinstance(excise_toggle, str)
+    if excise_toggle.lower() in ('y','yes'):
+        excise_spots = input("Which spots? (Separate all spot numbers by a comma)\t")
+        excise_spots = excise_spots.split(",")
+        for val in excise_spots:
+            spot_df.loc[spot_df.spot_number == int(val), 'valid'] = False
+    return spot_df
+
+
 # spots_to_hist = input("Which spots would you like to generate histograms for?\t")
 # hist_norm = False
 # hist_norm_toggle = input("Do you want to normalize the counts to a percentage? (y/[n])")
@@ -639,13 +661,6 @@ if len_diff != 0:
     normalized_density = np.append(np.asarray(normalized_density),np.full(len_diff, np.nan))
 spot_df['normalized_density'] = normalized_density
 
-#*********************************************************************************************#
-def spot_remover(spot_df):
-    excise_toggle = input("Would you like to remove any spots from the dataset? (y/(n))\t")
-    assert isinstance(excise_toggle, str)
-    if exise_toggle.lower() in ('y','yes'):
-        spots_to_excise = input("Which spots? (Separate all spot numbers by a comma)\t")
-        spots_to_excise = spots_to_excise.split(",")
 
 ##IN PROGRESS
 

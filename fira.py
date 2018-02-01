@@ -11,7 +11,7 @@ from scipy import stats
 from scipy.spatial.distance import pdist, squareform
 from scipy.sparse import csr_matrix, csgraph
 from skimage import exposure, feature, io, transform, filters, morphology, measure
-import glob, os, json, sys, math, warnings
+import glob, os
 import ebovchan as ebc
 
 pd.set_option('display.width', 1000)
@@ -61,8 +61,7 @@ chip_file = ebc.chip_file_reader(xml_file[0])
 mAb_dict, __ = ebc.dejargonifier(chip_file)
 spot_counter = len([key for key in mAb_dict])##Important
 
-sample_name = input("\nPlease enter a sample descriptor (e.g. VSV-MARV@1E6 PFU/mL)\n")
-
+sample_name = ebc.sample_namer(iris_path)
 ##Varibles
 
 spot_labels = []
@@ -120,27 +119,17 @@ while spot_to_scan <= spot_counter:
                                 if int(file.split(".")[1]) == spot_to_scan])
     passes_per_spot = len(pass_per_spot_list)
     scan_range = range(0,passes_per_spot,1)
-    # if passes_per_spot != pass_counter:
-        # print("Missing pgm files... ")
-        # if not os.path.exists('../virago_output/'+ chip_name + '/vcounts'):
-        #     os.makedirs('../virago_output/' + chip_name + '/vcounts')
-        # scans_counted = [int(file.split(".")[-1]) for file in pass_per_spot_list]
-        # scan_set = set(range(1,pass_counter+1))
-        # missing_df = pd.DataFrame(np.zeros(shape = (1,6)),
-        #                      columns = ['y', 'x', 'r','z', 'pc', 'sdm'])
-        # missing_csvs = scan_set.difference(scans_counted)
-        # for item in missing_csvs:
-        #     missing_scan = png[:-1] + str(item)
-        #     missing_df.to_csv('../virago_output/' + chip_name + '/vcounts/'
-        #                        + missing_scan + '.0.vcount.csv', sep = ",")
+
+    if passes_per_spot != pass_counter:
+
+        ebc.missing_pgm_fixer(spot_to_scan, pass_counter, pass_per_spot_list, chip_name)
 
     spot_to_scan += 1
-    for x in scan_range:
-        scan_list = [file for file in pgm_list if file.startswith(pass_per_spot_list[x])]
+    marker_dict = {}
+    circle_dict = {}
+    for scan in scan_range:
+        scan_list = [file for file in pgm_list if file.startswith(pass_per_spot_list[scan])]
         dpi = 96
-
-
-
         fluor_files = [file for file in scan_list
                        if file.endswith('A.pgm' or 'B.pgm' or 'C.pgm')]
         if fluor_files:
@@ -150,9 +139,13 @@ while spot_to_scan <= spot_counter:
         scan_collection = io.imread_collection(scan_list)
         pgm_name = scan_list[0].split(".")
         png = '.'.join(pgm_name[:3])
+        spot_num = int(png.split(".")[1])
+        spot_type = mAb_dict[spot_num]
+
         pic3D = np.array([pic for pic in scan_collection])
         pic3D_orig = pic3D.copy()
         zslice_count, nrows, ncols = pic3D.shape
+        half_cols = ncols // 2
         row, col = np.ogrid[:nrows,:ncols]
 
         if mirror_toggle is True:
@@ -167,11 +160,32 @@ while spot_to_scan <= spot_counter:
                                                      marker = IRISmarker,
                                                      thresh = 0.85,
                                                      gen_mask = True)
+        # row_coords = np.array([locs[0] for locs in marker_locs])
+        # col_coords = np.array([locs[1] for locs in marker_locs])
+        if spot_num not in marker_dict:
+            marker_dict[spot_num] = marker_locs
+            row_shift, col_shift = 0,0
+        else:
+            orig_locs = marker_dict[spot_num]
+            if (len(marker_locs) > 1) & (len(orig_locs) > 1):
+                mid_dist_new = [abs(half_cols - (ncols - coord[1])) for coord in marker_locs]
+                mid_marker_new = mid_dist_new.index(max(mid_dist_new))
+                new_row_coord = marker_locs[mid_marker_new][0]
+                new_col_coord = marker_locs[mid_marker_new][1]
+
+                mid_dist_new = [abs(half_cols - (ncols - coord[1])) for coord in orig_locs]
+                mid_marker_orig = mid_dist_new.index(max(mid_dist_new))
+                orig_row_coord = orig_locs[mid_marker_orig][0]
+                orig_col_coord = orig_locs[mid_marker_orig][1]
+                row_shift = orig_row_coord - new_row_coord
+                col_shift = orig_col_coord - new_col_coord
+            else:
+                row_shift, col_shift = 0,0
+            print(row_shift, col_shift)
 
         pic3D_clahe = ebc.clahe_3D(pic3D_norm)
 
         pic3D_rescale = ebc.rescale_3D(pic3D_clahe, perc_range=(3,97))
-
 
         if zslice_count > 1:
             mid_pic = int(np.ceil(zslice_count/2))
@@ -181,7 +195,12 @@ while spot_to_scan <= spot_counter:
         operative_pic = pic3D_rescale[mid_pic]
         print("Middle image: %d" % mid_pic)
 
-        xyr, pic_canny = ebc.spot_finder(operative_pic, canny_sig = 3, rad_range=(450,576))
+        if spot_num not in circle_dict:
+            xyr, pic_canny = ebc.spot_finder(operative_pic, canny_sig = 3, rad_range=(300,426))
+            circle_dict[spot_num] = xyr
+        else:
+            xyr = circle_dict[spot_num]
+            xyr = (xyr[0] - col_shift, xyr[1] - row_shift, xyr[2])
 
         width = col - xyr[0]
         height = row - xyr[1]
@@ -212,7 +231,7 @@ while spot_to_scan <= spot_counter:
         masked_pic_orig = np.ma.array(pic3D_orig[mid_pic], mask = full_mask)
 
         pic_binary, bin_thresh = ebc.fira_binarize(fira_pic, masked_pic_orig,
-                                                   thresh_scalar = 0.12,
+                                                   thresh_scalar = 0.14,
                                                    return_props = False,
                                                    show_hist = True)
 
@@ -230,25 +249,32 @@ while spot_to_scan <= spot_counter:
 
         fib_short_list.append(fib_short)
         fib_long_list.append(fib_long)
-        fira_df.to_csv(vdir + '/fcounts/' + png + '.vcount.csv')
-        with open(vcount_dir + '/' + png + '.fdata.txt', 'w') as fdata_file:
+        with open(vdir + '/fcounts/' + png + '.fdata.txt', 'w') as fdata_file:
             fdata_file.write( (
                                 'filename: {}\n'
+                                +'spot_type: {}\n'
                                 +'area_sqmm: {}\n'
                                 +'filament_ct: {}\n'
-                                +'middle_iamge: {}\n'
+                                +'middle_image: {}\n'
                                 +'spot_coords_xyr: {}\n'
                                 +'marker_coords: {}\n'
                                 +'binary_threshold: {}\n'
-                                ).format(png,area_sqmm,particle_count,
-                                         filo_ct,total_particles,
-                                         mid_pic, xyr, marker_locs)
+                                ).format(png, spot_type, area_sqmm, filo_ct,
+                                         mid_pic, xyr, marker_locs, bin_thresh)
                             )
 #---------------------------------------------------------------------------------------------#
     ####Processed Image Renderer
         pic_to_show = pic_skel
         if not os.path.exists('../virago_output/'+ chip_name + '/processed_images'):
             os.makedirs('../virago_output/' + chip_name + '/processed_images')
+
+        # ebc.image_details(pic3D_norm[mid_pic],
+        #                   pic3D_clahe[mid_pic],
+        #                   pic3D_rescale[mid_pic],
+        #                   pic_edge = pic_canny,
+        #                   chip_name = chip_name,
+        #                   png = png)
+
         ebc.processed_image_viewer(image = pic_to_show,
                                    particle_df = fira_df,
                                    cmap = 'gray',
@@ -297,7 +323,7 @@ sns.violinplot(x = 'spot_type',
                scale = 'count',
                bw = 0.1,
                palette = "Pastel1",
-               linewidth = 0.5)
+               linewidth = 0.5, inner = 'quartile')
 ax.set(ylim=(0, 10))
 plt.savefig('../violin.png',bbox_inches = 'tight', pad_inches = 0.1, dpi = 300)
 plt.close('all')
