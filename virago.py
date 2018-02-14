@@ -12,19 +12,22 @@ from scipy import stats
 from skimage import exposure, feature, io, transform, filters, measure, morphology
 import glob, os
 import ebovchan as ebc
+import logo
 
 pd.set_option('display.width', 1000)
 pd.options.display.max_rows = 999
+logo.print_logo()
 #*********************************************************************************************#
 #
 #    CODE BEGINS HERE
 #
 #*********************************************************************************************#
 ##Point to the correct directory
-retval = os.getcwd()
-print("\nCurrent working directory is:\n %s" % retval)
+# retval = os.getcwd()
+# print("\nCurrent working directory is:\n %s" % retval)
 IRISmarker = io.imread('IRISmarker.tif')
 iris_path = input("\nPlease type in the path to the folder that contains the IRIS data:\n")
+# iris_path = '/Volumes/KatahdinHD/ResilioSync/NEIDL/DATA/IRIS/tCHIP_results/tCHIP004_EBOVmay@1E6'
 iris_path = iris_path.strip('"')
 os.chdir(iris_path)
 
@@ -35,25 +38,18 @@ csv_list = sorted(glob.glob('*.csv'))
 xml_list = sorted(glob.glob('*/*.xml'))
 if not xml_list: xml_list = sorted(glob.glob('../*/*.xml'))
 chip_name = pgm_list[0].split(".")[0]
-bin_selem = np.ones((3,3), dtype=int)
 
-mirror_file = str(glob.glob('*000.pgm')).strip("'[]'")
-if mirror_file:
-    pgm_list.remove(mirror_file)
-    mirror = io.imread(mirror_file)
-    print("Mirror file detected")
-    mirror_toggle = True
-else: print("Mirror file absent"); mirror_toggle = False
+pgm_list, mirror = ebc.mirror_finder(pgm_list)
 
 zslice_count = max([int(pgmfile.split(".")[3]) for pgmfile in pgm_list])
 txtcheck = [file.split(".") for file in txt_list]
 iris_txt = [".".join(file) for file in txtcheck if (len(file) >= 3) and (file[2].isalpha())]
-nv_txt = [".".join(file) for file in txtcheck if (len(file) > 3) and (file[2].isdigit())]
+# nv_txt = [".".join(file) for file in txtcheck if (len(file) > 3) and (file[2].isdigit())]
 
 xml_file = [file for file in xml_list if chip_name in file]
 chip_file = ebc.chip_file_reader(xml_file[0])
+print("Chip file read\n")
 mAb_dict, mAb_dict_rev = ebc.dejargonifier(chip_file)
-intro = chip_file[0]
 
 sample_name = ebc.sample_namer(iris_path)
 
@@ -112,12 +108,13 @@ for val in mAb_dict.values():
 #*********************************************************************************************#
 # PGM Scanning
 spot_to_scan = 1
-filo_toggle = True
+filo_toggle = False
 #*********************************************************************************************#
-pgm_toggle = input("\nPGM files exist. Do you want scan them for particles? (y/[n])\n"
-                         + "WARNING: This will take a long time!\t")
+pgm_toggle = input("\nImage files detected. Do you want scan them for particles? (y/[n])\n"
+                    + "WARNING: This will take a long time!\t")
 if pgm_toggle.lower() in ('yes', 'y'):
     startTime = datetime.now()
+    circle_dict = {}
     while spot_to_scan <= spot_counter:
 
         pass_per_spot_list = sorted([file for file in pgm_set
@@ -130,7 +127,7 @@ if pgm_toggle.lower() in ('yes', 'y'):
             ebc.missing_pgm_fixer(spot_to_scan, pass_counter, pass_per_spot_list,
                                   chip_name, filo_toggle)
         spot_to_scan += 1
-        circle_dict = {}
+
         for scan in scan_range:
             scan_list = [file for file in pgm_list if file.startswith(pass_per_spot_list[scan])]
             dpi = 96
@@ -148,14 +145,15 @@ if pgm_toggle.lower() in ('yes', 'y'):
             png = '.'.join(pgm_name[:3])
             spot_type = mAb_dict[int(png.split(".")[1])]
             spot_num = int(png.split(".")[1])
+
             pic3D = np.array([pic for pic in scan_collection])
             pic3D_orig = pic3D.copy()
             zslice_count, nrows, ncols = pic3D.shape
             row, col = np.ogrid[:nrows,:ncols]
 
-            if mirror_toggle is True:
+            if mirror.size == pic3D[0].size:
                 pic3D = pic3D / mirror
-                print("Applying mirror to images...")
+                print("Applying mirror to images...\n")
 
             if pic3D.shape[0] > 1: mid_pic = int(np.floor(zslice_count/2))
             else: mid_pic = 0
@@ -186,19 +184,19 @@ if pgm_toggle.lower() in ('yes', 'y'):
             #
             # pic3D_clahe = img3D_sigmoid
 
-            # pic3D_clahe_masked = ebc.better_masker_3D(pic3D_clahe, marker_mask,
-            #                                           filled = True, fill_val = 0)
 
             pic3D_rescale = ebc.rescale_3D(pic3D_clahe, perc_range = (3,97))
+            print("Contrast adjusted\n")
 
-            # compressed_pic = np.max(pic3D_rescale, axis = 0) - np.min(pic3D_rescale, axis = 0)
-            # pic_orig_median = np.median(pic3D_orig, axis = 0)
+            pic_compressed = np.max(pic3D_norm, axis = 0) - np.min(pic3D_norm, axis = 0)
+            pic_orig_median = np.median(pic3D_orig, axis = 0)
 
             if spot_num not in circle_dict:
                 xyr, pic_canny = ebc.spot_finder(pic3D_rescale[mid_pic],
                                                  canny_sig = 2.75,
-                                                 rad_range=(450,4651))
+                                                 rad_range=(450,601))
                 circle_dict[spot_num] = xyr
+
             else:
                 xyr = circle_dict[spot_num]
 
@@ -208,7 +206,10 @@ if pgm_toggle.lower() in ('yes', 'y'):
             disk_mask = (width**2 + height**2 > rad**2)
             full_mask = disk_mask + marker_mask
 
-            pic3D_rescale_masked = ebc.better_masker_3D(pic3D_rescale, full_mask, filled = True)
+            pic3D_rescale_masked = ebc.masker_3D(pic3D_rescale,
+                                                 full_mask,
+                                                 filled = True,
+                                                 fill_val = 0)
 
             # figsize = (ncols/dpi, nrows/dpi)
             pix_area = (ncols * nrows) - np.count_nonzero(full_mask)
@@ -239,7 +240,7 @@ if pgm_toggle.lower() in ('yes', 'y'):
 
             slice_counts = particle_df.z.value_counts()
             high_count = int(slice_counts.index[0] - 1)
-            print("\nSlice with highest count: %d" % (high_count))
+            print("\nSlice with highest count: %d" % (high_count+1))
 
 #---------------------------------------------------------------------------------------------#
             ### Fluorescent File Processer WORK IN PRORGRESS
@@ -252,8 +253,9 @@ if pgm_toggle.lower() in ('yes', 'y'):
                 fluor3D = np.array([pic for pic in fluor_collection])
                 fluor3D_orig = fluor3D.copy()
                 zslice_count, nrows, ncols = fluor3D.shape
-                if mirror_toggle == True:
+                if mirror.size == pic3D[0].size:
                     fluor3D = fluor3D / mirror
+                #
                 # fnorm_scalar = np.median(fluor3D) * 2
                 # fluor3D_norm = fluor3D / fnorm_scalar
                 # fluor3D_norm[fluor3D_norm > 1] = 1
@@ -262,15 +264,13 @@ if pgm_toggle.lower() in ('yes', 'y'):
                 for plane,image in enumerate(fluor3D):
                     p1,p2 = np.percentile(image, (2, 98))
                     if p2 < 0.01: p2 = 0.01
-                    print(p1,p2)
+
                     fluor3D_rescale[plane] = exposure.rescale_intensity(image, in_range=(p1,p2))
 
-                #fluor3D_rescale = rescale_3D(fluor3D_norm)
-                fluor3D_masked = fluor3D_rescale.copy()
 
-                masker_3D(fluor3D_masked, disk_mask)
+                fluor3D_masked = ebc.masker_3D(fluor3D_rescale, full_mask)
 
-                masker_3D(fluor3D_orig, disk_mask)
+                # ebc.masker_3D(fluor3D_orig, full_mask)
 
                 fluor_blobs = ebc.blob_detect_3D(fluor3D_masked,
                                              min_sig = 0.9,
@@ -290,11 +290,11 @@ if pgm_toggle.lower() in ('yes', 'y'):
                 #print
                 print("\nFluorescent particles counted: " + str(len(fluor_df)) +"\n")
 
-                ebc.processed_image_viewer(fluor3D_rescale[0],
-                                       fluor_df,
-                                       spot_coords = xyr,
-                                       res = pix_per_micron,
-                                       cmap = 'plasma')
+                # ebc.processed_image_viewer(fluor3D_rescale[0],
+                #                        fluor_df,
+                #                        spot_coords = xyr,
+                #                        res = pix_per_micron,
+                #                        cmap = 'plasma')
 
                 # figsize = (ncols/dpi, nrows/dpi)
                 # fig = plt.figure(figsize = figsize, dpi = dpi)
@@ -331,18 +331,18 @@ if pgm_toggle.lower() in ('yes', 'y'):
                 # vis_fluor_df = dupe_finder(vis_fluor_df)
                 # print(vis_fluor_df)
 
-                fluor_df = ebc.dupe_finder(fluor_df)
-                rounding_cols = ['yx_5','yx_10','yx_10/5','yx_5/10','yx_ceil','yx_floor']
-                merging_cols_drop = ['yx_5_x','yx_10_x','yx_10/5_x','yx_5/10_x','yx_floor_x',
-                                'yx_5_y','yx_10_y','yx_10/5_y','yx_5/10_y','yx_floor_y']
-                merging_cols_keep = ['y_x', 'x_x', 'r_x', 'pc_x']
-                #for column in rounding_cols:
-                merge_df = pd.merge(particle_df, fluor_df, how = 'inner', on = 'yx_ceil')
-                merge_df.drop(merging_cols_drop, axis = 1, inplace = True)
-                merge_df = merge_df[(merge_df.pc_x > 10) & (merge_df.pc_x < 30)]
-                merge_df.rename(columns = {'pc_x':'percent_contrast_vis',
-                                           'pc_y':'percent_contrast_fluor'},
-                                            inplace = True)
+                # fluor_df = ebc.coord_rounder(fluor_df)
+                # rounding_cols = ['yx_5','yx_10','yx_10/5','yx_5/10','yx_ceil','yx_floor']
+                # merging_cols_drop = ['yx_5_x','yx_10_x','yx_10/5_x','yx_5/10_x','yx_floor_x',
+                #                 'yx_5_y','yx_10_y','yx_10/5_y','yx_5/10_y','yx_floor_y']
+                # merging_cols_keep = ['y_x', 'x_x', 'r_x', 'pc_x']
+                # #for column in rounding_cols:
+                # merge_df = pd.merge(particle_df, fluor_df, how = 'inner', on = 'yx_ceil')
+                # merge_df.drop(merging_cols_drop, axis = 1, inplace = True)
+                # merge_df = merge_df[(merge_df.pc_x > 10) & (merge_df.pc_x < 30)]
+                # merge_df.rename(columns = {'pc_x':'percent_contrast_vis',
+                #                            'pc_y':'percent_contrast_fluor'},
+                #                             inplace = True)
 
                 #     merge_df.append(merge_df2, ignore_index = True)
                 # print(merge_df)
@@ -360,7 +360,7 @@ if pgm_toggle.lower() in ('yes', 'y'):
 
                 # nonmatches = (merge_df.pc_y == 0).sum()
                 # print(nonmatches / len())
-                if len(merge_df) > 50:
+                # if len(merge_df) > 50:
                     # fig = plt.figure(figsize = (8,6), dpi = dpi)
                     # subplot = fig.add_subplot(111)
                     # subplot.scatter(merge_df.pc_x, merge_df.pc_y, c ='g', marker = '+', alpha = 0.5)
@@ -373,32 +373,36 @@ if pgm_toggle.lower() in ('yes', 'y'):
                     # # plt.title = (png + ": Correlation of Visible Particle Size"
                     # #                  + "with Fluorescent Signal")
 
-                    vis_fluor_scatter = sns.jointplot(x = "percent_contrast_vis",
-                                                      y = "percent_contrast_fluor",
-                                  data = merge_df, kind = "reg", color = "green")
-                    vis_fluor_scatter.savefig('../virago_output/' + chip_name + '/'
-                                     + png + "_fluor_scatter.png",
-                                     bbox_inches = 'tight', pad_inches = 0.1, dpi = 300)
-                    plt.show()
-                    plt.clf(); plt.close('all')
+                    # vis_fluor_scatter = sns.jointplot(x = "percent_contrast_vis",
+                    #                                   y = "percent_contrast_fluor",
+                    #               data = merge_df, kind = "reg", color = "green")
+                    # vis_fluor_scatter.savefig('../virago_output/' + chip_name + '/'
+                    #                  + png + "_fluor_scatter.png",
+                    #                  bbox_inches = 'tight', pad_inches = 0.1, dpi = 300)
+                    # plt.show()
+                    # plt.clf(); plt.close('all')
 
 #---------------------------------------------------------------------------------------------#
 
             if filo_toggle is True:
-                # filo_dir = '../virago_output/'+ chip_name + '/filo'
                 if not os.path.exists(filo_dir):
                     os.makedirs(filo_dir)
+
                 print("\nAnalyzing filaments...")
-                fira_pic = np.ma.array(pic3D_rescale[mid_pic], mask = full_mask)
+                filo_pic = np.ma.array(pic_compressed, mask = full_mask)
                 masked_pic_orig = np.ma.array(pic3D_orig[mid_pic], mask = full_mask)
 
-                pic_binary, binary_props, bin_thresh = ebc.fira_binarize(fira_pic, masked_pic_orig,
-                                                              thresh_scalar = 0.385)
+                pic_binary, binary_props, bin_thresh = ebc.fira_binarize(filo_pic,
+                                                                         masked_pic_orig,
+                                                                         thresh_scalar = 0.01,
+                                                                         show_hist = True)
+                print("\nBinary threshold = %.3f \n" % bin_thresh)
+
                 # pic_binary = morphology.binary_closing(pic_binary, selem = bin_selem)
                 binary_df, bbox_list = ebc.fira_binary_quant(binary_props,
                                                   pic3D_orig[mid_pic],
                                                   res = pix_per_micron,
-                                                  area_filter = (6,400))
+                                                  area_filter = (4,200))
                 binary_df = binary_df[binary_df.roundness < 1]
                 binary_df.reset_index(drop = True, inplace = True)
                 if not binary_df.empty:
@@ -459,13 +463,13 @@ if pgm_toggle.lower() in ('yes', 'y'):
                         else: filo_df = ebc.no_filos(filo_dir, png)
                     else: filo_df = ebc.no_filos(filo_dir, png)
                 else: filo_df = ebc.no_filos(filo_dir, png)
-            else: filo_df = ebc.no_filos(filo_dir, png)
+            else: filo_df = pd.DataFrame([]); bin_thresh = 0
 
             particle_count = len(particle_df)
             filo_ct = len(filo_df)
+            total_particles = particle_count + filo_ct
             if filo_toggle == True:
-                perc_fil = (filo_ct / (filo_ct + particle_count))*100
-                total_particles = particle_count + filo_ct
+                perc_fil = round((filo_ct / (filo_ct + particle_count))*100,2)
                 print("\nNon-filamentous particles counted: {}".format(particle_count))
                 print("Filaments counted: {}".format(filo_ct))
                 print("Percent filaments: {}\n".format(perc_fil))
@@ -485,26 +489,25 @@ if pgm_toggle.lower() in ('yes', 'y'):
                                     +'spot_coords_xyr: {}\n'
                                     +'marker_coords: {}\n'
                                     +'binary_thresh: {}\n'
+                                    +'valid: True'
                                     ).format(png, spot_type, area_sqmm, particle_count,
-                                             filo_ct,total_particles,
+                                             filo_ct, total_particles,
                                              high_count, xyr, marker_locs, bin_thresh)
                                 )
 
-
-
-
 #---------------------------------------------------------------------------------------------#
         ####Processed Image Renderer
-            pic_to_show = pic3D_rescale[mid_pic].copy()
+            pic_to_show = pic3D_rescale[high_count]
             if not os.path.exists('../virago_output/'+ chip_name + '/processed_images'):
                 os.makedirs('../virago_output/' + chip_name + '/processed_images')
 
-            ebc.image_details(pic3D_norm[mid_pic],
-                              pic3D_clahe[mid_pic],
-                              pic3D_rescale[mid_pic],
-                              pic_edge = pic_canny,
-                              chip_name = chip_name,
-                              png = png)
+            # ebc.image_details(fig1 = pic3D_norm[mid_pic],
+            #                   fig2 = pic3D_clahe[mid_pic],
+            #                   fig3 = pic3D_rescale[mid_pic],
+            #                   pic_edge = pic_binary,
+            #                   chip_name = chip_name,
+            #                   save = False,
+            #                   png = png)
 
             ebc.processed_image_viewer(pic_to_show,
                                        particle_df = particle_df,
@@ -534,14 +537,19 @@ if len(vcount_csv_list) >= total_pgms:
     cont_window = str(input("\nEnter the minimum and maximum percent contrast values,"\
                                 "separated by a dash.\n"))
     cont_window = cont_window.split("-")
+    cont_str = str(cont_window[0]) + '-' + str(cont_window[1])
     particle_counts_vir, particle_dict = ebc.vir_csv_reader(chip_name, vcount_csv_list, cont_window)
 
-    particle_count_col = str('particle_count_' + cont_window[0] + '_' + cont_window[1])
+    particle_count_col = str('particle_count_' + cont_str)
     spot_df[particle_count_col] = particle_counts_vir
     area_list = []
     for file in vdata_list:
+        full_text = {}
         with open(file) as f:
-            area = float(f.read().splitlines()[1].split(':')[1])
+            for line in f:
+                (key, val) = line.split(":")
+                full_text[key] = val.strip("\n")
+            area = float(full_text['area_sqmm'])
         area_list.append(area)
     spot_df['area'] = area_list
 
@@ -559,13 +567,13 @@ if len(vcount_csv_list) >= total_pgms:
     valid_list = [True] * len(spot_df)
     spot_df['valid'] = valid_list
     spot_df.loc[spot_df.kparticle_density.isnull(), 'valid'] = False
-
-    dict_file = pd.io.json.dumps(particle_dict)
     os.chdir(iris_path)
-    f = open(chip_name + '_particle_dict_vir.txt', 'w')
-    f.write(dict_file)
-    f.close()
-    print("Particle dictionary file generated")
+    # dict_file = pd.io.json.dumps(particle_dict)
+
+    # f = open(chip_name + '_particle_dict_vir.txt', 'w')
+    # f.write(dict_file)
+    # f.close()
+    # print("Particle dictionary file generated")
 
 
 elif len(vcount_csv_list) != total_pgms:
@@ -644,11 +652,11 @@ vhf_colormap = ('#e41a1c','#377eb8','#4daf4a',
             '#984ea3','#ff7f00','#ffff33',
             '#a65628','#f781bf','gray','black')
 
-histogram_df = ebc.histogrammer(particle_dict, spot_counter, baselined = True)
+histogram_df = ebc.histogrammer(particle_dict, spot_counter, cont_window, baselined = True)
 
 mean_histogram_df = ebc.histogram_averager(histogram_df, mAb_dict_rev, pass_counter)
 
-ebc.combo_histogram_fig(mean_histogram_df, chip_name, pass_counter, colormap = vhf_colormap)
+ebc.combo_histogram_fig(mean_histogram_df, chip_name, pass_counter, cont_str, cmap = vhf_colormap)
 
 
 #*********************************************************************************************#
@@ -771,6 +779,27 @@ print('File generated: '+ csv_spot_data)
 # Bar Plot Generator
 #####################################################################
 #--------------------------------------------------------------------
+fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(8, 6), sharey=True)
+sns.set(style = 'darkgrid', font_scale = 0.75)
+sns.barplot(y='kparticle_density',x='spot_type',hue='scan_number',data=spot_df, ax=ax1)
+
+ax1.set_ylabel("Particle Density (kparticles/sq.mm)\n"+"Contrast = "+cont_str+ '%', fontsize = 10)
+ax1.set_xlabel("Prescan & Postscan", fontsize = 8)
+sns.barplot(y='normalized_density',x='spot_type',data=spot_df, color='purple', ci=None,ax=ax2)
+ax2.set_ylabel("")
+ax2.set_xlabel("Difference", fontsize = 8)
+for ax in fig.axes:
+    plt.sca(ax)
+    plt.xticks(rotation=30, fontsize = 6)
+
+plt.suptitle(chip_name+" "+sample_name, y = 1.08)
+
+plt.tight_layout()
+plot_name = chip_name + '_barplot_virago_'+cont_str+'.png'
+plt.savefig('../virago_output/' + chip_name + '/' +  plot_name,
+            bbox_inches = 'tight', pad_inches = 0.1, dpi = 300)
+plt.close('all')
+print('File generated: ' + plot_name)
 # first_scan = 1
 # last_scan = pass_counter
 # baseline = (spot_df[scan_series == first_scan][['spot_type',
