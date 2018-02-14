@@ -7,22 +7,57 @@ in your browser.
 '''
 import numpy as np
 import pandas as pd
-from bokeh.layouts import column
-from bokeh.models import BoxSelectTool, LassoSelectTool, HoverTool, TapTool
+import glob, os
+from os.path import dirname, join
+from bokeh.layouts import row, column, widgetbox
+from bokeh.models import BoxSelectTool, LassoSelectTool, HoverTool, TapTool, Div, widgets
 from bokeh.plotting import figure, curdoc, ColumnDataSource
+# from bokeh.models.widgets import Button, RadioButtonGroup, Select, Slider
 from skimage import io as skio
 from skimage import measure
 import ebovchan as ebc
 
-img_name = 'tCHIP004.001.001.005.pgm'
-data = pd.read_csv('tCHIP004.001.001.vcount.csv')
-img = skio.imread(img_name)
-img2 = ebc.clahe_3D(img)
-img3 = ebc.rescale_3D(img2)
-img4 = measure.block_reduce(img3,block_size = (2,2))
+expt_dir = '/Volumes/KatahdinHD/ResilioSync/NEIDL/DATA/IRIS/tCHIP_results/tCHIP004_EBOVmay@1E6'
+vcount_dir = '/Volumes/KatahdinHD/ResilioSync/NEIDL/DATA/IRIS/tCHIP_results/virago_output/tCHIP004/vcounts'
 
-# desc = Div(text=open(join(dirname(__file__), "description.html")).read(), width=800)
+os.chdir(expt_dir)
+image_list = sorted(glob.glob('*.pgm'))
+image_list, mirror = ebc.mirror_finder(image_list)
+data_select ='tCHIP004.001.001'
+image_set = sorted(list(set([".".join(image.split(".")[:3]) for image in image_list])))
 
+def load_image(expt_dir, data_select, image_list, mirror):
+    os.chdir(expt_dir)
+    scan_list = [image for image in image_list if data_select in image]
+    img_stack = skio.imread_collection(scan_list)
+    img_3D = np.array([pic for pic in img_stack])
+
+    if mirror.size == img_3D[0].size:
+        img_3D = img_3D / mirror
+    norm_scalar = np.median(img_3D) * 2
+    img_3D_norm = img_3D / norm_scalar
+    img_3D_norm[img_3D_norm > 1] = 1
+
+    img3D_clahe = ebc.clahe_3D(img_3D_norm)
+    img3D_rescale = ebc.rescale_3D(img3D_clahe)
+    img_final = measure.block_reduce(img3D_rescale[5],block_size = (2,2))
+
+    return img_final
+
+def load_data(vcount_dir, data_select):
+    os.chdir(vcount_dir)
+    vcount_csv_list = sorted(glob.glob('*.vcount.csv'))
+    vcount = data_select+'.vcount.csv'
+    data = pd.read_csv(vcount)
+
+    return data
+
+img_final = load_image(expt_dir, data_select, image_list, mirror)
+
+data = load_data(vcount_dir, data_select)
+print("Done!")
+
+desc = Div(text=open(join(dirname(__file__), "description.html")).read(), width=300)
 
 x = data.x
 y = data.y
@@ -38,11 +73,11 @@ particle_data = HoverTool(tooltips = [("particle ID", "$index"),
                                       ("percent contrast", "@pc"),
                                       ("bg standard dev", "@std_bg")
                                      ])
-p = figure(plot_width = 1920//2.2, plot_height = 1200//2.2, min_border=10, min_border_left=5,
+p = figure(plot_width = 1920//2, plot_height = 1200//2, min_border=10, min_border_left=5,
           x_range=(0,1920), y_range=(0,1200), x_axis_location=None, y_axis_location=None,
-          tools = ["box_zoom,box_select,lasso_select,tap",particle_data,"reset"],
-          title = img_name)
-p.image(image=[img4], x=-0.5, y=0, dw=1919.5, dh=1200)
+          tools = ['box_zoom,box_select,lasso_select,tap',particle_data,"reset"],
+          title = data_select)
+p.image(image=[img_final], x=-0.5, y=0, dw=1919.5, dh=1200)
 p.select(BoxSelectTool).select_every_mousemove = False
 p.select(LassoSelectTool).select_every_mousemove = False
 p.xgrid.grid_line_color = None
@@ -64,9 +99,9 @@ histo_data = HoverTool(tooltips =[('bin','$index'),
                                   ('value','@r_edges')
                                   ])
 
-ph = figure(plot_width=p.plot_width, plot_height=200, x_range=(0,10),
+ph = figure(plot_width=p.plot_width, plot_height=180, x_range=(0,10),
             y_range=(0, hmax), min_border=10, min_border_left=5, y_axis_location='left',
-            tools = ['tap',histo_data], toolbar_location = 'right',
+            tools = ['tap,xbox_select',histo_data], toolbar_location = 'right',
             title = "Particle Contrast Histogram")
 
 ph.xgrid.grid_line_color = None
@@ -79,7 +114,19 @@ main_histo = ph.quad(bottom=0, left='l_edges', right='r_edges', top='hhist', sou
 highlight_hist = ph.quad(bottom=0, left=hedges[:-1], right=hedges[1:], top=hzeros,
                       alpha=0.5, color="cyan", line_color=None)
 
-layout = column(p, ph)
+
+select_img = widgets.Select(title="Select Image:", value = data_select, options = image_set)
+
+def img_change(selected = None):
+    new_select = select_img.value
+
+    new_img = load_image(expt_dir, new_select, image_list, mirror)
+
+    new_data = load_data(vcount_dir, new_select)
+
+
+
+layout = row(column(desc,select_img), column(p, ph))
 
 curdoc().add_root(layout)
 curdoc().title = "IRIS Interactive Viewer"
