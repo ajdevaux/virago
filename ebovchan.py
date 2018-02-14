@@ -9,8 +9,9 @@ import seaborn as sns
 from scipy.spatial.distance import pdist, squareform
 from scipy.sparse import csr_matrix, csgraph
 from scipy.stats import norm, gamma
-from skimage import exposure, feature, transform, filters, util, measure, morphology
-import os, json, math, warnings, sys
+from scipy import ndimage as ndi
+from skimage import exposure, feature, transform, filters, util, measure, morphology, io
+import os, json, math, warnings, sys, glob
 #*********************************************************************************************#
 #
 #           SUBROUTINES
@@ -46,7 +47,7 @@ def missing_pgm_fixer(spot_to_scan, pass_counter, pass_per_spot_list, chip_name,
                              % (missing_scan, 0, 0))
         print("Writing blank data files for %s" % missing_scan)
 #*********************************************************************************************#
-def image_details(fig1, fig2, fig3, pic_edge, chip_name, png, dpi = 96):
+def image_details(fig1, fig2, fig3, pic_edge, chip_name, png, save = False, dpi = 96):
     """A subroutine for debugging contrast adjustment"""
     bin_no = 55
     nrows, ncols = fig1.shape
@@ -57,7 +58,6 @@ def image_details(fig1, fig2, fig3, pic_edge, chip_name, png, dpi = 96):
     ax_img.set_axis_off()
     fig.add_axes(ax_img)
 
-    #fig3_bins = len(set(fig3.ravel()))
     fig3[pic_edge] = fig3.max()*2
 
     ax_img.imshow(fig3, cmap = 'gray')
@@ -105,8 +105,11 @@ def image_details(fig1, fig2, fig3, pic_edge, chip_name, png, dpi = 96):
     #ax_cdf1.set_ylim([0,1])
     ax_hist2.set_xlim([np.median(fig2)-0.5,np.median(fig2)+0.5])
     ax_hist3.set_xlim([0,1])
-    plt.savefig('../virago_output/' + chip_name + '/processed_images/' + png + '_image_details.png',
-                dpi = dpi)
+    if save == True:
+        plt.savefig('../virago_output/' + chip_name
+                    + '/processed_images/' + png
+                    + '_image_details.png',
+                    dpi = dpi)
     plt.show()
 
     plt.close('all')
@@ -127,6 +130,19 @@ def display(im3D, cmap = "gray", step = 1):
 
     plt.show()
     plt.close('all')
+#*********************************************************************************************#
+def mirror_finder(pgm_list):
+    mirror_file = str(glob.glob('*000.pgm')).strip("'[]'")
+    if mirror_file:
+        pgm_list.remove(mirror_file)
+        mirror = io.imread(mirror_file)
+        print("Mirror file detected\n")
+        mirror_toggle = True
+    else:
+        print("Mirror file absent\n")
+        mirror_toggle = False
+        mirror = np.ones(shape = 1, dtype = int)
+    return pgm_list, mirror
 #*********************************************************************************************#
 def marker_finder(image, marker, thresh = 0.9, gen_mask = False):
     """This locates the "backwards-L" shapes in the IRIS images"""
@@ -200,11 +216,14 @@ def spot_finder(image, canny_sig = 2, rad_range = (525, 651)):
     print("Spot center coordinates (row, column, radius): {}".format(xyr))
     return xyr, pic_canny
 #*********************************************************************************************#
-def better_masker_3D(image_stack, mask, filled = False, fill_val = np.nan):
+def masker_3D(image_stack, mask, filled = False, fill_val = 0):
+    """Masks all images in stack so only areas not masked (the spot) are quantified.
+    Setting filled = True will return a normal array with fill_val filled in on the masked areas.
+    Default filled = False returns a numpy masked array."""
     pic3D_masked = np.ma.empty_like(image_stack)
     pic3D_filled = np.empty_like(image_stack)
-    for plane, pic in enumerate(image_stack):
-        pic3D_masked[plane] = np.ma.array(pic, mask = mask)
+    for plane, image in enumerate(image_stack):
+        pic3D_masked[plane] = np.ma.array(image, mask = mask)
         if filled == True:
             pic3D_filled[plane] = pic3D_masked[plane].filled(fill_value = fill_val)
 
@@ -222,7 +241,6 @@ def blob_detect_3D(image_stack, min_sig, max_sig, thresh, im_name = ""):
         blobs = feature.blob_dog(image, min_sigma = min_sig, max_sigma = max_sig,
                                  threshold = thresh, overlap = 0
                                 )
-
         if len(blobs) == 0:
             print("No blobs here")
             blobs = np.zeros(shape = (1,4))
@@ -619,21 +637,30 @@ def sample_namer(iris_path):
         sample_name = input("\nPlease enter a sample descriptor (e.g. VSV-MARV@1E6 PFU/mL)\n")
     return sample_name
 #*********************************************************************************************#
-def histogrammer(particle_dict, spot_counter, baselined = False):
+def histogrammer(particle_dict, spot_counter, cont_window, baselined = False):
     """Returns a DataFrame of histogram data from the particle dictionary. If baselined = True, returns a DataFrame where the histogram data has had pass 1 values subtracted for all spots"""
     baseline_histogram_df, histogram_df =  pd.DataFrame(), pd.DataFrame()
+    cont_0 = float(cont_window[0])
+    cont_1 = float(cont_window[1])
+    bin_no = int((cont_1 - cont_0) * 10)
     for x in range(1,spot_counter+1):
         hist_df, base_hist_df = pd.DataFrame(), pd.DataFrame()
         histo_listo = [particle_dict[key]
                        for key in sorted(particle_dict.keys())
                        if int(key.split(".")[0]) == x]
         for y, vals in enumerate(histo_listo):
-            hist_df[str(x)+'.'+str(y+1)], __ = np.histogram(vals, bins = 100, range = (0,10))
+            hist_df[str(x)+'.'+str(y+1)], hbins = np.histogram(vals,
+                                                            bins = bin_no,
+                                                            range = (cont_0,cont_1))
+
         for col in hist_df:
             spot_num = str(col.split('.')[0])
             base_hist_df[col] = (hist_df[col] - hist_df[spot_num+'.'+str(1)])
+
         baseline_histogram_df = pd.concat([baseline_histogram_df, base_hist_df], axis = 1)
         histogram_df = pd.concat([histogram_df, hist_df], axis = 1)
+    baseline_histogram_df['bins'] = hbins[:-1]
+    histogram_df['bins'] = hbins[:-1]
     if baselined == False:
         return histogram_df
     else:
@@ -641,13 +668,15 @@ def histogrammer(particle_dict, spot_counter, baselined = False):
 #*********************************************************************************************#
 def histogram_averager(histogram_df, mAb_dict_rev, pass_counter):
     """Returns an DataFrame representing the average histogram of all spots of the same type."""
-    mean_histo_df = pd.DataFrame()
+    mean_histo_df = histogram_df[['bins']]
     for key in mAb_dict_rev:
         mAb_split_df, pass_df, mean_spot_df = pd.DataFrame(), pd.DataFrame(), pd.DataFrame()
         for col in histogram_df:
-            spot_num = int(col.split(".")[0])
-            if (spot_num in mAb_dict_rev[key]):
-                mAb_split_df = pd.concat((mAb_split_df,histogram_df[col]), axis = 1)
+            if str(col).replace('.','').isdigit():
+                spot_num = int(col.split(".")[0])
+                if (spot_num in mAb_dict_rev[key]):
+                    mAb_split_df = pd.concat((mAb_split_df,histogram_df[col]), axis = 1)
+
         for i in range(1,pass_counter+1):
             for col in mAb_split_df:
                 pass_num = int(col.split(".")[1])
@@ -658,34 +687,38 @@ def histogram_averager(histogram_df, mAb_dict_rev, pass_counter):
         mean_histo_df = pd.concat((mean_histo_df, mean_spot_df), axis = 1)
     return mean_histo_df
 #*********************************************************************************************#
-def combo_histogram_fig(mean_histogram_df, chip_name, pass_counter, colormap, corr = 'V'):
+def combo_histogram_fig(mean_histogram_df, chip_name, pass_counter, cont_str, cmap):
     """Generates a histogram figure for each pass in the IRIS experiment from a DataFrame representing the average data for every spot type"""
-    histo_x = (mean_histogram_df.index / 10)
+    # histo_x = (mean_histogram_df.index / 10)
     histo_dir = ('../virago_output/'+chip_name+'/histograms')
+    y_min = int(np.floor(np.min(np.min(mean_histogram_df.drop('bins', axis = 1))) - 1))
+    y_max = int(np.ceil(np.max(np.max(mean_histogram_df.drop('bins', axis = 1))) + 1))
     if not os.path.exists(histo_dir): os.makedirs(histo_dir)
-    for i in range(1,pass_counter+1):
+    for i in range(1, pass_counter+1):
         c = 0
         for col in mean_histogram_df:
-            spot_type = col.split("_")[0]
-            pass_num = int(col.split("_")[1])
-            if pass_num == i:
-                plt.step(x = histo_x,
-                         y = mean_histogram_df[col],
-                         linewidth = 1,
-                         color = colormap[c],
-                         alpha = 0.5,
-                         label = spot_type)
-                c += 1
+            if not col == 'bins':
+                spot_type = col.split("_")[0]
+                pass_num = int(col.split("_")[1])
+                if pass_num == i:
+                    plt.step(x = mean_histogram_df.bins,
+                             y = mean_histogram_df[col],
+                             linewidth = 1,
+                             color = cmap[c],
+                             alpha = 0.5,
+                             label = spot_type)
+                    c += 1
         plt.title(chip_name+" Pass "+str(i)+" Average Normalized Histograms")
+        plt.axhline(y=0, ls='dotted', c=black, alpha=0.75)
         plt.legend(loc = 'best', fontsize = 8)
-        plt.ylabel('Particle Count\n'+ 'Correlation Value >=' + corr, size = 8)
-        plt.yticks(range(-15,30,5), size = 8)
+        plt.ylabel("Particle Count", size = 8)
+        plt.yticks(range(y_min,y_max+1,1), size = 6)
         plt.xlabel("Percent Contrast", size = 8)
-        plt.xticks(np.arange(0,10.5,.5), size = 8)
+        plt.xticks(mean_histogram_df.bins[::5], size = 4, rotation = 30)
 
-        fig_name = (chip_name+'_combohisto_pass_'+str(i)+'.png')
+        fig_name = (chip_name+'_combohisto_pass_'+str(i)+'_contrast_'+cont_str+'.png')
         plt.savefig(histo_dir + '/' + fig_name, bbox_inches = 'tight', dpi = 150)
-        print('File generated: ' + fig_name)
+        print("File generated: " + fig_name)
         plt.clf()
 #*********************************************************************************************#
 def average_spot_data(spot_df, spot_set, pass_counter, chip_name):
@@ -730,26 +763,46 @@ def average_spot_data(spot_df, spot_set, pass_counter, chip_name):
 def fira_binarize(fira_pic, pic_orig, thresh_scalar, return_props = True, show_hist = False):
 
     spot_median = np.ma.median(fira_pic)
-    thresh = spot_median + thresh_scalar
-
-    print("\nBinary threshold = %.3f \n" % thresh)
+    fira_pic = fira_pic.filled(0)
+    thresh_high = spot_median + thresh_scalar
+    thresh_low = spot_median + (thresh_scalar / 2)
     if show_hist == True:
-        plt.xticks(np.arange(0,1.2,0.2), size = 10)
-        plt.axvline(thresh, color = 'r')
+        # plt.xticks(np.arange(0,np.max(fira_pic)), size = 10)
+        plt.xlim((0,thresh_high+0.05))
+        plt.axvline(thresh_high, color = 'r')
+        plt.axvline(thresh_low, color = 'r', alpha = 0.5)
         plt.axvline(spot_median, color = 'b')
-        sns.distplot(fira_pic.ravel(), kde = False, norm_hist = True)
+        sns.distplot(fira_pic.ravel(),
+                     kde = False,
+                     bins = int(np.ceil(np.max(fira_pic)*1000)),
+                     norm_hist = True)
         plt.show()
         plt.clf()
 
-    pic_binary = (fira_pic > thresh).astype(int)
-    pic_binary = pic_binary.filled(0)
+    # pic_binary = (fira_pic > thresh).astype(int)
+    def _hysteresis_th(image, low, high):
+        """Ripped from https://github.com/scikit-image/scikit-image/blob/master/skimage/filters/thresholding.py#L885"""
+        low = np.clip(low, a_min=None, a_max=high)  # ensure low always below high
+        mask_low = image > low
+        mask_high = image > high
+        # Connected components of mask_low
+        labels_low, num_labels = ndi.label(mask_low)
+        # Check which connected components contain pixels from mask_high
+        sums = ndi.sum(mask_high, labels_low, np.arange(num_labels + 1))
+        connected_to_high = sums > 0
+        thresholded = connected_to_high[labels_low]
+        return thresholded
+
+    pic_binary = _hysteresis_th(fira_pic, low = thresh_low, high = thresh_high)
+    #
+    pic_binary = ndi.binary_fill_holes(pic_binary)
 
     if return_props == True:
         pic_binary_label = measure.label(pic_binary, connectivity = 2)
         binary_props = measure.regionprops(pic_binary_label, pic_orig, cache = True)
-        return pic_binary, binary_props, thresh
+        return pic_binary, binary_props, thresh_high
     else:
-        return pic_binary, thresh
+        return pic_binary, thresh_high
 #*********************************************************************************************#
 def fira_skel(pic_binary, pic_orig):
     pic_skel = morphology.skeletonize(pic_binary)
@@ -817,8 +870,6 @@ def fira_binary_quant(regionprops, pic_orig, res, area_filter = (12,210)):
             bbox_list.append((region['bbox'][0:2], region['bbox'][2:]))
             area_list.append(region['area'])
             perim_list.append(region['perimeter'])
-
-
 
     roundness_list = _roundness_measure(area_list, perim_list)
 
