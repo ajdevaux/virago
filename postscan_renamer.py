@@ -27,7 +27,7 @@ if toggle in ("y", "yes"):
         os.rename(files_to_rename[i],new_names[i])
         i += 1
 
-else: exit
+else: exit()
 
 
 
