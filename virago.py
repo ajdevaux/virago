@@ -110,9 +110,11 @@ for val in mAb_dict.values():
 spot_to_scan = 1
 filo_toggle = False
 #*********************************************************************************************#
-pgm_toggle = input("\nImage files detected. Do you want scan them for particles? (y/[n])\n"
+pgm_toggle = input("\nImage files detected. Do you want scan them for particles? ([y]/n)\n"
                     + "WARNING: This will take a long time!\t")
-if pgm_toggle.lower() in ('yes', 'y'):
+if pgm_toggle.isdigit():
+    spot_to_scan = int(pgm_toggle)
+if pgm_toggle.lower() not in ('no', 'n'):
     startTime = datetime.now()
     circle_dict = {}
     while spot_to_scan <= spot_counter:
@@ -135,11 +137,13 @@ if pgm_toggle.lower() in ('yes', 'y'):
             if not os.path.exists('../virago_output/'+ chip_name):
                 os.makedirs('../virago_output/' + chip_name)
 
-            fluor_files = [file for file in scan_list
-                           if file.endswith('A.pgm' or 'B.pgm' or 'C.pgm')]
+            fluor_files = [file for file in scan_list if file.split(".")[-2] in 'ABC']
             if fluor_files:
-                [scan_list.remove(file) for file in scan_list if file in fluor_files]
-                print("\nFluorescent channel(s) detected\n")
+
+                scan_list = [file for file in scan_list if file not in fluor_files]
+
+                print("\nFluorescent channel(s) detected: {}\n".format(fluor_files))
+
             scan_collection = io.imread_collection(scan_list)
             pgm_name = scan_list[0].split(".")
             png = '.'.join(pgm_name[:3])
@@ -165,7 +169,7 @@ if pgm_toggle.lower() in ('yes', 'y'):
 
             marker_locs, marker_mask = ebc.marker_finder(image = pic3D_norm[mid_pic],
                                                          marker = IRISmarker,
-                                                         thresh = 0.88,
+                                                         thresh = 0.9,
                                                          gen_mask = True)
 
             pic3D_clahe = ebc.clahe_3D(pic3D_norm, cliplim = 0.004)##UserWarning silenced
@@ -217,9 +221,11 @@ if pgm_toggle.lower() in ('yes', 'y'):
                 cam_micron_per_pix = 3.45
                 mag = 44
                 print("\nExoviewer images\n")
+                exo_toggle = True
             else:
                 cam_micron_per_pix = 5.86
                 mag = 40
+                exo_toggle = False
             pix_per_micron = mag/cam_micron_per_pix
 
             area_sqmm = round(((pix_area * cam_micron_per_pix**2) / mag**2)*1e-6, 6)
@@ -228,7 +234,7 @@ if pgm_toggle.lower() in ('yes', 'y'):
                                            min_sig = 1,
                                            max_sig = 10,
                                            thresh = 0.07,
-                                           im_name = png)
+                                           image_list = scan_list)
 
 
             particle_df = ebc.particle_quant_3D(pic3D_orig, vis_blobs, std_bg_thresh = 680)
@@ -241,6 +247,8 @@ if pgm_toggle.lower() in ('yes', 'y'):
             slice_counts = particle_df.z.value_counts()
             high_count = int(slice_counts.index[0] - 1)
             print("\nSlice with highest count: %d" % (high_count+1))
+            if not os.path.exists('../virago_output/'+ chip_name + '/processed_images'):
+                os.makedirs('../virago_output/' + chip_name + '/processed_images')
 
 #---------------------------------------------------------------------------------------------#
             ### Fluorescent File Processer WORK IN PRORGRESS
@@ -248,6 +256,7 @@ if pgm_toggle.lower() in ('yes', 'y'):
 #---------------------------------------------------------------------------------------------#
             if fluor_files:
                 # fluor_particles = np.empty(shape = (0,6))
+                fluor_files = [file for file in fluor_files if file.split(".")[-2] not in 'C']
 
                 fluor_collection = io.imread_collection(fluor_files)
                 fluor3D = np.array([pic for pic in fluor_collection])
@@ -276,7 +285,7 @@ if pgm_toggle.lower() in ('yes', 'y'):
                                              min_sig = 0.9,
                                              max_sig = 3,
                                              thresh = .15,
-                                             im_name = png)
+                                             image_list = fluor_files)
                 #print(fluor_blobs)
                 sdm_filter = 100 ###Make lower if edge particles are being detected
                 #if mirror_toggle is True: sdm_filter = sdm_filter / (np.mean(mirror))
@@ -290,12 +299,17 @@ if pgm_toggle.lower() in ('yes', 'y'):
                 #print
                 print("\nFluorescent particles counted: " + str(len(fluor_df)) +"\n")
 
-                # ebc.processed_image_viewer(fluor3D_rescale[0],
-                #                        fluor_df,
-                #                        spot_coords = xyr,
-                #                        res = pix_per_micron,
-                #                        cmap = 'plasma')
-
+                ebc.processed_image_viewer(fluor3D_rescale[0],
+                                            fluor_df,
+                                            chip_name = chip_name,
+                                            spot_coords = xyr,
+                                            res = pix_per_micron,
+                                            cmap = 'plasma',
+                                            im_name = png +'_fluorA',
+                                            show_image = False,
+                                            show_info = False)
+                fluor_df.to_csv('../virago_output/' + chip_name + '/' + chip_name + '_fluor_data.csv')
+                print('File generated: '+ chip_name + '_fluor_data.csv')
                 # figsize = (ncols/dpi, nrows/dpi)
                 # fig = plt.figure(figsize = figsize, dpi = dpi)
                 # axes = plt.Axes(fig,[0,0,1,1])
@@ -497,9 +511,8 @@ if pgm_toggle.lower() in ('yes', 'y'):
 
 #---------------------------------------------------------------------------------------------#
         ####Processed Image Renderer
-            pic_to_show = pic3D_rescale[high_count]
-            if not os.path.exists('../virago_output/'+ chip_name + '/processed_images'):
-                os.makedirs('../virago_output/' + chip_name + '/processed_images')
+            pic_to_show = pic3D_rescale[mid_pic]
+
 
             # ebc.image_details(fig1 = pic3D_norm[mid_pic],
             #                   fig2 = pic3D_clahe[mid_pic],
@@ -521,6 +534,7 @@ if pgm_toggle.lower() in ('yes', 'y'):
                                        show_info = True,
                                        chip_name = chip_name,
                                        im_name = png,
+                                       exo_toggle = exo_toggle,
                                        show_image = False)
 #---------------------------------------------------------------------------------------------#
             # particle_df.drop(rounding_cols, axis = 1, inplace = True)
@@ -716,86 +730,94 @@ averaged_df = ebc.average_spot_data(spot_df, spot_set, pass_counter, chip_name)
 #--------------------------------------------------------------------
 # def timeseries(DFrame_detail, DFrame_avg, name_dict,):
 # def baseline_norm()
-baseline_toggle = input("Do you want the time series chart normalized to baseline? ([y]/n)\t")
-assert isinstance(baseline_toggle, str)
-if baseline_toggle.lower() in ('no', 'n'):
-    filt_toggle = 'kparticle_density'
-    avg_filt_toggle = 'avg_kparticle_density'
-    stdev_filt_toggle = 'kparticle_density_std'
-else:
-    filt_toggle = 'normalized_density'
-    avg_filt_toggle = 'avg_normalized_density'
-    stdev_filt_toggle = 'normalized_density_std'
-    print("Normalizing...")
+if pass_counter > 2:
+    baseline_toggle = input("Do you want the time series chart normalized to baseline? ([y]/n)\t")
+    assert isinstance(baseline_toggle, str)
+    if baseline_toggle.lower() in ('no', 'n'):
+        filt_toggle = 'kparticle_density'
+        avg_filt_toggle = 'avg_kparticle_density'
+        stdev_filt_toggle = 'kparticle_density_std'
+    else:
+        filt_toggle = 'normalized_density'
+        avg_filt_toggle = 'avg_normalized_density'
+        stdev_filt_toggle = 'normalized_density_std'
+        print("Normalizing...")
 
-fig = plt.figure(figsize = (8,6))
-ax1 = fig.add_subplot(111)
-n,c = 1,0
-for key in mAb_dict.keys():
-    time_x = spot_df[spot_df['spot_number'] == key]['scan_time'].reset_index(drop = True)
-    density_y = spot_df[spot_df['spot_number'] == key][filt_toggle].reset_index(drop = True)
-    while n > 1:
-        if mAb_dict[n-1] != mAb_dict[n]:
-            c += 1
-            break
-        else:
-            break
-    ax1.plot(time_x, density_y, marker = '+', linewidth = 1,
-                 color = vhf_colormap[c], alpha = 0.4, label = '_nolegend_')
-    n += 1
-ax2 = fig.add_subplot(111)
+    fig = plt.figure(figsize = (8,6))
+    ax1 = fig.add_subplot(111)
+    n,c = 1,0
+    for key in mAb_dict.keys():
+        time_x = spot_df[spot_df['spot_number'] == key]['scan_time'].reset_index(drop = True)
+        density_y = spot_df[spot_df['spot_number'] == key][filt_toggle].reset_index(drop = True)
+        while n > 1:
+            if mAb_dict[n-1] != mAb_dict[n]:
+                c += 1
+                break
+            else:
+                break
+        ax1.plot(time_x, density_y, marker = '+', linewidth = 1,
+                     color = vhf_colormap[c], alpha = 0.4, label = '_nolegend_')
+        n += 1
+    ax2 = fig.add_subplot(111)
 
-for n, spot in enumerate(spot_set):
-    avg_data = averaged_df[averaged_df['spot_type'].str.contains(spot)]
-    avg_time_x = avg_data['avg_time']
-    avg_density_y = avg_data['avg_norm_density']
-    errorbar_y = avg_data['std_norm_density']
-    ax2.errorbar(avg_time_x, avg_density_y,
-                    yerr = errorbar_y, marker = 'o', label = spot_set[n],
-                    linewidth = 2, elinewidth = 1, capsize = 3,
-                    color = vhf_colormap[n], alpha = 0.9, aa = True)
+    for n, spot in enumerate(spot_set):
+        avg_data = averaged_df[averaged_df['spot_type'].str.contains(spot)]
+        avg_time_x = avg_data['avg_time']
+        avg_density_y = avg_data['avg_norm_density']
+        errorbar_y = avg_data['std_norm_density']
+        ax2.errorbar(avg_time_x, avg_density_y,
+                        yerr = errorbar_y, marker = 'o', label = spot_set[n],
+                        linewidth = 2, elinewidth = 1, capsize = 3,
+                        color = vhf_colormap[n], alpha = 0.9, aa = True)
 
-ax2.legend(loc = 'upper left', fontsize = 8, ncol = 1)
-plt.xlabel("Time (min)", color = 'gray')
-plt.ylabel('Particle Density (kparticles/sq. mm)\n'+ cont_window[0]+'-'+cont_window[1]
-            + '% Contrast', color = 'gray')
-plt.xticks(np.arange(0, max(spot_df.scan_time) + 1, 5), color = 'gray')
-plt.yticks(color = 'gray')
-plt.title(chip_name + ' Time Series of ' + sample_name)
+    ax2.legend(loc = 'upper left', fontsize = 8, ncol = 1)
+    plt.xlabel("Time (min)", color = 'gray')
+    plt.ylabel('Particle Density (kparticles/sq. mm)\n'+ cont_window[0]+'-'+cont_window[1]
+                + '% Contrast', color = 'gray')
+    plt.xticks(np.arange(0, max(spot_df.scan_time) + 1, 5), color = 'gray')
+    plt.yticks(color = 'gray')
+    plt.title(chip_name + ' Time Series of ' + sample_name)
 
-plt.axhline(linestyle = '--', color = 'gray')
-plot_name = chip_name + '_timeseries_virago.png'
+    plt.axhline(linestyle = '--', color = 'gray')
+    plot_name = chip_name + '_timeseries_'+cont_str+'.png'
 
-plt.savefig('../virago_output/' + chip_name + '/' +  plot_name,
-            bbox_inches = 'tight', pad_inches = 0.1, dpi = 300)
-print('File generated: ' + plot_name)
-csv_spot_data = str('../virago_output/' + chip_name + '/' + chip_name + '_spot_data.csv')
-spot_df.to_csv(csv_spot_data)
-#plt.show()
-plt.clf(); plt.close('all')
-print('File generated: '+ csv_spot_data)
+    plt.savefig('../virago_output/' + chip_name + '/' +  plot_name,
+                bbox_inches = 'tight', pad_inches = 0.1, dpi = 300)
+    print('File generated: ' + plot_name)
+
+    plt.clf(); plt.close('all')
+
+spot_df.to_csv('../virago_output/' + chip_name + '/' + chip_name + '_spot_data.csv')
+print('File generated: '+ chip_name + '_spot_data.csv')
 # -------------------------------------------------------------------
 #####################################################################
 # Bar Plot Generator
 #####################################################################
 #--------------------------------------------------------------------
+
+firstlast_spot_df = spot_df[(spot_df.scan_number == 1) | (spot_df.scan_number == pass_counter)]
+final_spot_df = firstlast_spot_df[firstlast_spot_df.scan_number == pass_counter]
+
 fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(8, 6), sharey=True)
 sns.set(style = 'darkgrid', font_scale = 0.75)
-sns.barplot(y='kparticle_density',x='spot_type',hue='scan_number',data=spot_df, ax=ax1)
 
+sns.barplot(y='kparticle_density',x='spot_type',hue='scan_number',data=firstlast_spot_df,
+             errwidth = 2, ax=ax1)
 ax1.set_ylabel("Particle Density (kparticles/sq.mm)\n"+"Contrast = "+cont_str+ '%', fontsize = 10)
 ax1.set_xlabel("Prescan & Postscan", fontsize = 8)
-sns.barplot(y='normalized_density',x='spot_type',data=spot_df, color='purple', ci=None,ax=ax2)
+
+sns.barplot(y='normalized_density',x='spot_type',data=final_spot_df,
+            color='purple',errwidth = 2, ax=ax2)
 ax2.set_ylabel("")
 ax2.set_xlabel("Difference", fontsize = 8)
 for ax in fig.axes:
     plt.sca(ax)
     plt.xticks(rotation=30, fontsize = 6)
 
-plt.suptitle(chip_name+" "+sample_name, y = 1.08)
+plt.suptitle(chip_name+" "+sample_name, y = 1.04, fontsize = 14)
 
 plt.tight_layout()
-plot_name = chip_name + '_barplot_virago_'+cont_str+'.png'
+plot_name = chip_name + '_barplot_'+cont_str+'.png'
 plt.savefig('../virago_output/' + chip_name + '/' +  plot_name,
             bbox_inches = 'tight', pad_inches = 0.1, dpi = 300)
 plt.close('all')

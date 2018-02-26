@@ -232,7 +232,7 @@ def masker_3D(image_stack, mask, filled = False, fill_val = 0):
     else:
         return pic3D_filled
 #*********************************************************************************************#
-def blob_detect_3D(image_stack, min_sig, max_sig, thresh, im_name = ""):
+def blob_detect_3D(image_stack, min_sig, max_sig, thresh, image_list = ""):
     """This is the primary function for detecting "blobs" in the stack of IRIS images.
     Uses the Difference of Gaussians algorithm"""
     total_blobs = np.empty(shape = (0,4))
@@ -249,7 +249,7 @@ def blob_detect_3D(image_stack, min_sig, max_sig, thresh, im_name = ""):
             blobs = np.append(blobs,z_arr, axis = 1)
         total_blobs = np.append(total_blobs, blobs, axis = 0)
         total_blobs = total_blobs.astype(int, copy = False)
-        print("Image scanned: " + im_name + "-Slice " + str(plane+1))
+        print("Image scanned: " + image_list[plane] )
 
     return total_blobs
 #*********************************************************************************************#
@@ -344,7 +344,7 @@ def color_mixer(zlen,c1,c2,c3,c4):
         color_list = ['white']
     return color_list
 #*********************************************************************************************#
-def _circle_particles(particle_df, axes):
+def _circle_particles(particle_df, axes, exo_toggle):
     z_list = [z for z in list(set(particle_df.z))]# if str(z).isdigit()]
     zlen = len(z_list)
     dark_red = (0.645, 0, 0.148); pale_yellow = (0.996, 0.996, 0.746)
@@ -361,7 +361,8 @@ def _circle_particles(particle_df, axes):
         try:
             if max(pc) > hist_max: hist_max = max(pc)
         except: ValueError
-        crad = 2
+        if exo_toggle == True: crad = 0.2
+        else: crad = 2
         # try:
         #     if max(pc) > 25: crad = 0.25
         # except: ValueError
@@ -395,14 +396,14 @@ def _circle_particles(particle_df, axes):
     plt.yticks(size = 10, color = 'k')
     plt.ylabel("PARTICLE COUNT", color = 'k')
 #*********************************************************************************************#
-def processed_image_viewer(image, particle_df, spot_coords, res,
+def processed_image_viewer(image, particle_df, spot_coords, res, chip_name,
                             filo_df = pd.DataFrame([]),
                             cmap = 'gray', dpi = 96, markers = [],
-                            chip_name = "", im_name = "",
+                            im_name = "",
                             show_particles = True, show_fibers = False,
-                            show_filaments = False,
+                            show_filaments = False, exo_toggle = False,
                             show_markers = True, show_info = False,
-                            show_image = True, scale = 15,
+                            show_image = False, scale = 15,
                             crosshairs = False, invert = False):
     """Generates a full-resolution PNG image after, highlighting features, showing counted particles,
     and a particle contrast histogram"""
@@ -437,7 +438,7 @@ def processed_image_viewer(image, particle_df, spot_coords, res,
                  color = 'red', fontsize = '20', horizontalalignment = 'left')
 
     if show_particles == True:
-         _circle_particles(particle_df, axes)
+         _circle_particles(particle_df, axes, exo_toggle)
     if show_fibers == True:
         def fiber_points(particle_df, axes):
             for v1 in particle_df.vertex1:
@@ -561,29 +562,30 @@ def nano_csv_reader(chip_name, spot_data, csv_list):
 
     return min_corr, spot_data, particle_dict, contrast_window
 #*********************************************************************************************#
-def density_normalizer(spot_data, pass_counter, spot_list):
+def density_normalizer(spot_df, pass_counter, spot_list):
     """Particle count normalizer so pass 1 = 0 particle density"""
     normalized_density = []
     for spot in spot_list:
-        normspot = [val[0] for val in spot_data.spot_number.iteritems() if int(val[1]) == spot]
+        normspot = [val[0] for val in spot_df.spot_number.iteritems() if int(val[1]) == spot]
         x = 0
         while x < pass_counter - 1:
-            if all(np.isnan(spot_data.kparticle_density[normspot])):
-                normalized_density = [np.nan] * pass_counter
+            if all(np.isnan(spot_df.kparticle_density[normspot])):
+                normalized_density.append([np.nan] * pass_counter)
+
                 break
-            elif np.isnan(spot_data.kparticle_density[normspot[x]]):
+            elif np.isnan(spot_df.kparticle_density[normspot[x]]):
                     print("Missing value for Pass " + str(x + 1))
-                    normalized_density = normalized_density + [np.nan]
+                    normalized_density.append([np.nan])
                     x += 1
             else:
-                norm_d = [
-                          (spot_data.kparticle_density[normspot[scan]]
-                           - spot_data.kparticle_density[normspot[x]])
-                          for scan in np.arange(x,pass_counter,1)
-                         ]
-                normalized_density = normalized_density + norm_d
+                spot_vals = [
+                            (spot_df.kparticle_density[normspot[scan]]
+                            - spot_df.kparticle_density[normspot[x]])
+                            for scan in np.arange(x,pass_counter,1)
+                             ]
+                normalized_density.append(spot_vals)
                 break
-    #print(normalized_density)
+    normalized_density = [scan_val for spot_vals in normalized_density for scan_val in spot_vals]
     return normalized_density
 #*********************************************************************************************#
 def chip_file_reader(xml_file):
@@ -709,7 +711,7 @@ def combo_histogram_fig(mean_histogram_df, chip_name, pass_counter, cont_str, cm
                              label = spot_type)
                     c += 1
         plt.title(chip_name+" Pass "+str(i)+" Average Normalized Histograms")
-        plt.axhline(y=0, ls='dotted', c=black, alpha=0.75)
+        plt.axhline(y=0, ls='dotted', c='black', alpha=0.75)
         plt.legend(loc = 'best', fontsize = 8)
         plt.ylabel("Particle Count", size = 8)
         plt.yticks(range(y_min,y_max+1,1), size = 6)
