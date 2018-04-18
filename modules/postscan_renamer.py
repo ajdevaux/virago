@@ -12,13 +12,20 @@ mirror_file = str(glob.glob('*000.pgm')).strip("'[]'")
 if mirror_file:
     files_to_rename.remove(mirror_file)
 print(files_to_rename)
-toggle = input("OK to rename " + str(len(files_to_rename)) + " files? (y/[n])")
-if toggle in ("y", "yes"):
+toggle = input("OK to rename " + str(len(files_to_rename)) + " files? (y/[n])\t")
+if toggle not in ("n", "no"):
+    new_number = input("What scan number to set files to? (Enter a number between 1 and 999)\t")
     new_names = []
     for file in files_to_rename:
         parsed_file = file.split(".")
-        if parsed_file[2] == '001':
-            parsed_file[2] = '002'
+        if parsed_file[2].isdigit():
+            while not new_number.isdigit():
+                new_number = str(input("Please enter a NUMBER.\t"))
+            else:
+                while not (999 > int(new_number) > 1):
+                    new_number = str(input("Please enter a VALID number.\t"))
+                else:
+                    parsed_file[2] = ('0' * (3 - len(new_number))) + new_number
             renamed_file = ".".join(parsed_file)
             new_names.append(renamed_file)
     print(new_names)

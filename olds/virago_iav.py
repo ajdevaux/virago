@@ -235,7 +235,7 @@ if pgm_toggle.lower() in ('yes', 'y'):
                                            min_sig = 1,
                                            max_sig = 10,
                                            thresh = 0.07,
-                                           im_name = png)
+                                           image_list = scan_list)
 
 
             particle_df = ebc.particle_quant_3D(pic3D_orig, vis_blobs, std_bg_thresh = 680)
