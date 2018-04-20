@@ -26,12 +26,15 @@ logo.print_logo()
 #*********************************************************************************************#
 IRISmarker_liq = skio.imread('images/IRISmarker_maxmin_v5.tif')
 IRISmarker_exo = skio.imread('images/IRISmarker_maxmin_v4.tif')
-iris_path = input("\nPlease type in the path to the folder that contains the IRIS data:\n")
-iris_path = iris_path.strip('"')##Point to the correct directory
-os.chdir(iris_path)
+
+pgm_list = []
+while pgm_list == []: ##Keep repeating until pgm files are found
+    iris_path = input("\nPlease type in the path to the folder that contains the IRIS data:\n")
+    iris_path = iris_path.strip('"')##Point to the correct directory
+    os.chdir(iris_path)
+    pgm_list = sorted(glob.glob('*.pgm'))
 
 txt_list = sorted(glob.glob('*.txt'))
-pgm_list = sorted(glob.glob('*.pgm'))
 pgm_set = set([".".join(file.split(".")[:3]) for file in pgm_list])
 csv_list = sorted(glob.glob('*.csv'))
 xml_list = sorted(glob.glob('*/*.xml'))
@@ -48,6 +51,7 @@ xml_file = [file for file in xml_list if chip_name in file]
 chip_file = vpipes.chip_file_reader(xml_file[0])
 
 mAb_dict, mAb_dict_rev = vpipes.dejargonifier(chip_file)
+spot_tuple = tuple(mAb_dict_rev.keys())
 
 sample_name = vpipes.sample_namer(iris_path)
 
@@ -111,10 +115,8 @@ for txtfile in iris_txt:
                                 spot_types.rename('spot_type')], axis = 1)
     spot_df = spot_df.append(spot_data_solo, ignore_index = True)
 #*********************************************************************************************#
-spot_labels = [[val]*(pass_counter) for val in mAb_dict.values()]
-spot_set = []
-for val in mAb_dict.values():
-    if val not in spot_set: spot_set.append(val)
+# spot_labels = [[val]*(pass_counter) for val in mAb_dict.values()]
+
 #*********************************************************************************************#
 # PGM Scanning
 spot_to_scan = 1
@@ -127,6 +129,7 @@ if pgm_toggle.isdigit():
 if pgm_toggle.lower() not in ('no', 'n'):
     startTime = datetime.now()
     marker_dict, circle_dict, rotation_dict, shift_dict, overlay_dict = {},{},{},{},{}
+    tracking_dict = {}
     while spot_to_scan <= spot_counter:
 
         pass_per_spot_list = sorted([file for file in pgm_set
@@ -142,6 +145,7 @@ if pgm_toggle.lower() not in ('no', 'n'):
         for scan in scan_range:
             scan_list = [file for file in pgm_list if file.startswith(pass_per_spot_list[scan])]
             dpi = 96
+            validity = True
 
             fluor_files = [file for file in scan_list if file.split(".")[-2] in 'ABC']
             if fluor_files:
@@ -205,7 +209,8 @@ if pgm_toggle.lower() not in ('no', 'n'):
                                                             gen_mask = True)
             marker_dict[spot_pass_str] = marker_locs
 
-            # rotation_dict = vimage.measure_rotation(marker_dict, spot_pass_str, rotation_dict)
+            img_rotation = vimage.measure_rotation(marker_dict, spot_pass_str)
+            rotation_dict[spot_pass_str] = img_rotation
 
             mean_shift, overlay_toggle = vimage.measure_shift(marker_dict, pass_num, spot_num)
             shift_dict[spot_pass_str] = mean_shift
@@ -220,21 +225,20 @@ if pgm_toggle.lower() not in ('no', 'n'):
                 if img_overlay is not None:
                     img_name = png + "_overlay.png"
                     vimage.gen_img(img_overlay, name = img_name, savedir = overlay_dir, show = False)
-                    
 
-            if spot_num not in circle_dict:
-                xyr, pic_canny = vimage.spot_finder(pic3D_rescale[mid_pic],
-                                                 canny_sig = 2.75,
-                                                 rad_range=(400,601),
-                                                 center_mode = False)
-                circle_dict[spot_num] = xyr
-
-            else:
+            if spot_num in circle_dict:
                 xyr = circle_dict[spot_num]
                 shift_x = xyr[0] + mean_shift[1]
                 shift_y = xyr[1] + mean_shift[0]
                 xyr = (shift_x, shift_y, xyr[2])
                 circle_dict[spot_num] = xyr
+            else:
+                xyr, pic_canny = vimage.spot_finder(pic3D_rescale[mid_pic],
+                                                    canny_sig = 2.75,
+                                                    rad_range=(400,601),
+                                                    center_mode = False)
+                circle_dict[spot_num] = xyr
+
 
             width = col - xyr[0]
             height = row - xyr[1]
@@ -243,9 +247,9 @@ if pgm_toggle.lower() not in ('no', 'n'):
             full_mask = disk_mask + marker_mask
 
             pic3D_rescale_masked = vimage.masker_3D(pic3D_rescale,
-                                                 full_mask,
-                                                 filled = True,
-                                                 fill_val = np.nan)
+                                                    full_mask,
+                                                    filled = True,
+                                                    fill_val = np.nan)
 
             pix_area = (ncols * nrows) - np.count_nonzero(full_mask)
             pix_per_micron = mag/cam_micron_per_pix
@@ -266,8 +270,39 @@ if pgm_toggle.lower() not in ('no', 'n'):
             particle_df = vquant.dupe_dropper(particle_df, rounding_cols, sorting_col = 'pc')
             particle_df.drop(columns = rounding_cols, inplace = True)
 
+            tracking_dict[spot_pass_str] = particle_df[['y','x','pc', 'cv_bg']]
+            tracking_dict[spot_pass_str]['spot.pass'] = (
+                                                        [spot_pass_str]
+                                                        *len(tracking_dict[spot_pass_str])
+                                                        )
+            if pass_num == 2:
+                prev_part_df, new_part_df = vpipes._dict_matcher(tracking_dict,
+                                                                 spot_num, pass_num,
+                                                                 mode = 'series')
+                new_part_df['y'] = new_part_df['y'] + mean_shift[0]
+                new_part_df['x'] = new_part_df['x'] + mean_shift[1]
+                tracking_df = pd.concat([prev_part_df, new_part_df])
+            elif pass_num > 2:
+                tracking_df = tracking_df.append(tracking_dict[spot_pass_str])
+
+
+
+
+
+
+
+
+
+
+
+
+
+
             slice_counts = particle_df.z.value_counts()
             high_count = int(slice_counts.index[0] - 1)
+            if high_count <= 0:
+                validity = False
+                print("\nSpot {}, scan {} is poor quality".format(spot_num, scan))
             print("\nSlice with highest count: {}".format(high_count+1))
 
 #---------------------------------------------------------------------------------------------#
@@ -283,11 +318,11 @@ if pgm_toggle.lower() not in ('no', 'n'):
 
                 good_fluor_files = [file for file in fluor_files if file.split(".")[-2] not in 'C']
 
-                if len(good_fluor_files) > 0:
-                    fluor_collection = skio.imread_collection(good_fluor_files)
-                    fluor3D = np.array([pic for pic in fluor_collection])
-                    fluor3D_orig = fluor3D.copy()
-                    zslice_count, nrows, ncols = fluor3D.shape
+                # if len(good_fluor_files) > 0:
+                #     fluor_collection = skio.imread_collection(good_fluor_files)
+                #     fluor3D = np.array([pic for pic in fluor_collection])
+                #     fluor3D_orig = fluor3D.copy()
+                #     zslice_count, nrows, ncols = fluor3D.shape
                 # if mirror.size == pic3D[0].size:
                 #     fluor3D = fluor3D / mirror
                 #
@@ -519,23 +554,11 @@ if pgm_toggle.lower() not in ('no', 'n'):
                 print("\nParticles counted: {}".format(particle_count))
 
             particle_df.to_csv(vcount_dir + '/' + png + '.vcount.csv')
-            with open(vcount_dir + '/' + png + '.vdata.txt', 'w') as vdata_file:
-                vdata_file.write( (
-                                    'filename: {}\n'
-                                    +'spot_type: {}\n'
-                                    +'area_sqmm: {}\n'
-                                    +'non-filo_ct: {}\n'
-                                    +'filo_ct: {}\n'
-                                    +'total_particles: {}\n'
-                                    +'slice_high_count: {}\n'
-                                    +'spot_coords_xyr: {}\n'
-                                    +'marker_coords: {}\n'
-                                    +'binary_thresh: {}\n'
-                                    +'valid: True'
-                                    ).format(png, spot_type, area_sqmm, particle_count,
-                                             filo_ct, total_particles,
-                                             high_count, xyr, marker_locs, bin_thresh)
-                                )
+            vdata_vals = tuple([png, spot_type, area_sqmm, mean_shift,
+                              particle_count, filo_ct, total_particles,
+                              high_count+1, xyr, marker_locs, bin_thresh,
+                              validity])
+            vpipes.write_vdata(vcount_dir, png, vdata_vals)
 
 #---------------------------------------------------------------------------------------------#
         ####Processed Image Renderer
@@ -555,10 +578,10 @@ if pgm_toggle.lower() not in ('no', 'n'):
                                            res = pix_per_micron,
                                            filo_df = filo_df,
                                            markers = marker_locs,
-                                           show_particles = True,
+                                           show_particles = False,
                                            show_markers = True,
-                                           show_filaments = True,
-                                           show_info = True,
+                                           show_filaments = False,
+                                           show_info = False,
                                            chip_name = chip_name,
                                            im_name = png,
                                            exo_toggle = exo_toggle,
@@ -590,13 +613,17 @@ total_pgms = len(iris_txt) * pass_counter
 if len(vcount_csv_list) >= total_pgms:
     cont_window = str(input("\nEnter the minimum and maximum percent contrast values,"\
                                 "separated by a dash.\n"))
-    cont_window = cont_window.split("-")
-    cont_str = str(cont_window[0]) + '-' + str(cont_window[1])
+    while "-" not in cont_window:
+        cont_window = str(input("\nPlease enter two values separated by a dash.\n"))
+    else:
+        cont_window = cont_window.split("-")
+    # cont_str = str(cont_window[0]) + '-' + str(cont_window[1])
+    cont_str = '{0}-{1}'.format(*cont_window)
     particle_counts_vir, particle_dict = vquant.vir_csv_reader(chip_name, vcount_csv_list, cont_window)
 
     particle_count_col = str('particle_count_' + cont_str)
     spot_df[particle_count_col] = particle_counts_vir
-    area_list = []
+    area_list, valid_list = [],[]
     for file in vdata_list:
         full_text = {}
         with open(file) as f:
@@ -604,8 +631,11 @@ if len(vcount_csv_list) >= total_pgms:
                 (key, val) = line.split(":")
                 full_text[key] = val.strip("\n")
             area = float(full_text['area_sqmm'])
+            validity = bool(full_text['valid'])
         area_list.append(area)
+        valid_list.append(validity)
     spot_df['area'] = area_list
+    spot_df['valid'] = valid_list
 
     if filo_toggle is True:
         os.chdir('../filo')
@@ -616,7 +646,7 @@ if len(vcount_csv_list) >= total_pgms:
 
     kparticle_density = np.round(np.array(particle_counts_vir) / area_list * 0.001,3)
     spot_df['kparticle_density'] = kparticle_density
-    valid_list = [True] * len(spot_df)
+    # valid_list = [True] * len(spot_df)
     spot_df['valid'] = valid_list
     spot_df.loc[spot_df.kparticle_density.isnull(), 'valid'] = False
     os.chdir(iris_path)
@@ -657,7 +687,7 @@ new_cm = [
             '#ffff99',
             '#b15928',
          ]
-if int(cont_window[0]) <= 1:
+if float(cont_window[0]) == 0:
 
     histogram_df = vgraph.histogrammer(particle_dict, spot_counter, cont_window, baselined = True)
     histogram_df.to_csv(histo_dir + '/' + chip_name + '_histogram_data.csv')
@@ -665,17 +695,12 @@ if int(cont_window[0]) <= 1:
     mean_histogram_df = vgraph.histogram_averager(histogram_df, mAb_dict_rev, pass_counter)
     mean_histogram_df.to_csv(histo_dir + '/' + chip_name + '_mean_histogram_data.csv')
 
-    vgraph.generate_combo_hist(mean_histogram_df, chip_name, pass_counter, cont_str, cmap = vhf_colormap)
-
+    vgraph.generate_combo_hist(mean_histogram_df, chip_name, pass_counter, cont_window, cmap = vhf_colormap)
 
     for spot in range(1,spot_counter+1):
         joyplot_df = vgraph.dict_joy_trans(particle_dict, spot)
         if not joyplot_df.empty:
             vgraph.generate_joyplot(joyplot_df, spot, cont_window, chip_name, savedir=histo_dir)
-
-#*********************************************************************************************#
-# Particle count normalizer so pass 1 = 0 particle density
-#*********************************************************************************************#
 
 normalized_density = vquant.density_normalizer(spot_df, pass_counter, spot_list)
 len_diff = len(spot_df) - len(normalized_density)
@@ -684,13 +709,13 @@ if len_diff != 0:
 spot_df['normalized_density'] = normalized_density
 
 
-averaged_df = vgraph.average_spot_data(spot_df, spot_set, pass_counter, chip_name)
+averaged_df = vgraph.average_spot_data(spot_df, spot_tuple, pass_counter, chip_name)
 
 if pass_counter > 2:
-    vgraph.generate_timeseries(spot_df, averaged_df, mAb_dict, spot_set,
+    vgraph.generate_timeseries(spot_df, averaged_df, mAb_dict, spot_tuple,
                         chip_name, sample_name, vhf_colormap, cont_window,
                         scan_or_time = timeseries_mode)
-elif pass_counter == 2:
+elif pass_counter <= 2:
     vgraph.generate_barplot(spot_df, pass_counter, cont_window, chip_name, sample_name)
 
 spot_df.to_csv(virago_dir + '/' + chip_name + '.spot_data.csv')
