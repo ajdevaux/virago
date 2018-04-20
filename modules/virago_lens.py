@@ -1,9 +1,4 @@
-''' Present a scatter plot with linked histograms on both axes.
-Use the ``bokeh serve`` command to run the example by executing:
-    bokeh serve --show virago_lens.py
-at your command prompt (navigate to correct directory first).
-It will then ask you to input a directory containing the raw experimental data (PGMs)
-'''
+
 from future.builtins import input
 import numpy as np
 import pandas as pd
@@ -17,10 +12,15 @@ from bokeh.plotting import figure, curdoc, ColumnDataSource
 from skimage import io as skio
 from skimage import measure, img_as_int
 import ebovchan as ebc
+'''
+Use the ``bokeh serve`` command to run the example by executing:
+    bokeh serve --show virago_lens.py
+at your command prompt (navigate to correct directory first).
+It will then ask you to input a directory containing the raw experimental data (PGMs)
+'''
 
-
-expt_dir = input("\nPlease type in the path to the folder that contains the IRIS data:\n")
-
+# expt_dir = input("\nPlease type in the path to the folder that contains the IRIS data:\n")
+expt_dir = '/Volumes/KatahdinHD/ResilioSync/NEIDL/DATA/IRIS/pCHIP_results/pCHIP001_VSV-MARV@1E6'
 expt_dir = expt_dir.strip('"')
 os.chdir(expt_dir)
 sample_name = ebc.sample_namer(expt_dir)
@@ -39,7 +39,7 @@ vcount_dir =  '../virago_output/'+ chip_name + '/vcounts'
 
 image_list = sorted(glob.glob('*.pgm'))
 image_list, mirror = ebc.mirror_finder(image_list)
-data_select = chip_name + '.001.001'
+data_select = chip_name + '.005.010'
 image_set = sorted(list(set([".".join(image.split(".")[:3]) for image in image_list])))
 
 
@@ -70,7 +70,7 @@ def load_data(vcount_dir, data_name):
     cv_bg = data.cv_bg
 
     rzeros = np.zeros(len(pc))
-    data_dict = dict(x=x, y=y, z=z, pc=pc, cv_bg = cv_bg, select = rzeros)
+    data_dict = dict(x = x, y = y, z = z, pc = pc, cv_bg = cv_bg, select = pc*4)
 
     return data_dict
 
@@ -101,10 +101,10 @@ p.select(LassoSelectTool).select_every_mousemove = False
 p.xgrid.grid_line_color = None
 p.ygrid.grid_line_color = None
 
-all_circles = p.circle(x = 'x', y = 'y', size = 15, source = source,
-                       fill_color = None, line_color = 'blue')
-select_circles = p.circle(x = 'x', y = 'y', size = 'select', source = source,
-                             fill_color = 'cyan', fill_alpha = 1, line_color = 'red')
+# all_circles = p.circle(x = 'x', y = 'y', size = 15, source = source,
+#                        fill_color = None, line_color = 'blue')
+all_circles = p.circle(x = 'x', y = 'y', size = 'select', source = source,
+                             fill_color = 'cyan', fill_alpha = 0.25, line_color = 'blue')
 #************************************************************************************************#
 def load_histo(data_dict):
     bin_no = 100
@@ -162,8 +162,8 @@ def data_reloader(select_img_data, dir):
 def update_particles(attrname, old, new):
     data_dict = data_reloader(select_img_data, vcount_dir)
     source.data = data_dict
-    all_circles = p.circle(x = 'x', y = 'y', size = 10, source = source,
-                           fill_color = None, line_color = 'blue')
+    all_circles = p.circle(x = 'x', y = 'y', size = 'select', source = source,
+                           fill_color = 'cyan', fill_alpha = 0.25, line_color = 'blue')
 
 def img_change(attrname, old, new):
     new_select = select_img_data.value
@@ -191,10 +191,8 @@ def histo_highlighter(attr, old, new):
         histo_dict['highlights'] = np.zeros(len(histo_dict['hhist']))
     else:
         histo_dict['highlights'], __ = np.histogram(data_dict['pc'][inds], bins=hedges)
-        # print(histo_dict['highlights'])
 
     source2.data = histo_dict
-
 
 select_img_data = widgets.Select(title="Select Image Data:", value = data_name, options = image_set)
 
@@ -208,25 +206,25 @@ def particle_select(attr, old, new):
     inds = np.array(new['1d']['indices'])
     data_dict = data_reloader(select_img_data, vcount_dir)
     histo_dict, hedges = load_histo(data_dict)
-
-    if len(inds) == 0 or len(inds) == len(data_dict['pc']):
-        data_dict['select'] = np.zeros(len(data_dict['pc']))
+    print(len(inds))
+    if (len(inds) == len(data_dict['pc'])) or len(inds) == 0:
+        data_dict['select'] = data_dict['pc']*4
+    # elif len(inds) == 0:
+    #     data_dict['select'] = np.zeros(len(data_dict['pc']))
     else:
         selected_bins = []
         for val in inds:
             selected_bin = (histo_dict['l_edges'][val], histo_dict['r_edges'][val])
             selected_bins.append(selected_bin)
-        print(selected_bins)
         for val in selected_bins:
-            data_dict['select'][(data_dict['pc'] > val[0]) & (data_dict['pc'] <= val[1])] = 50
+            data_dict['select'][(data_dict['pc'] > val[0]) & (data_dict['pc'] <= val[1])] *= 4
+    print(data_dict['select'])
 
     source.data = data_dict
 
 main_histo.data_source.on_change('selected',particle_select)
 #************************************************************************************************#
 
-
 layout = row(column(desc, select_img_data), column(p, ph))
-
 curdoc().add_root(layout)
 curdoc().title = "VIRAGO LENS Viewer"
