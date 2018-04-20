@@ -40,14 +40,14 @@ def dejargonifier(chip_file):
                    '8G5': 'anti-VSV', '4F3': 'anti-panEBOV',
                    '13C6': 'anti-panEBOV'
                    }
-    mAb_dict = {} ##Matches spot antibody type to scan order (spot number)
+    mAb_dict = {}
     for q, spot in enumerate(chip_file):
         spot_info_dict = chip_file[q]
         mAb_name = spot_info_dict['spottype'].upper()
-        for key in jargon_dict:
+        for key in jargon_dict.keys():
             if mAb_name.startswith(key) or mAb_name.endswith(key):
-                print("Dejargonifying {} to {}".format(mAb_name, jargon_dict[key]))
                 new_name = jargon_dict[key] + '_(' + mAb_name + ')'
+                break
             else:
                 new_name = mAb_name
         mAb_dict[q + 1] = new_name
@@ -68,7 +68,26 @@ def sample_namer(iris_path):
         sample_name = input("\nPlease enter a sample descriptor (e.g. VSV-MARV@1E6 PFU/mL)\n")
     return sample_name
 #*********************************************************************************************#
-def missing_pgm_fixer(spot_to_scan, pass_counter, pass_per_spot_list, chip_name, filo_toggle = False):
+def write_vdata(dir, filename, list_of_vals):
+    with open(dir + '/' + filename + '.vdata.txt', 'w') as vdata_file:
+        vdata_file.write((
+                         'filename: {0}\n'
+                         +'spot_type: {1}\n'
+                         +'area_sqmm: {2}\n'
+                         +'image_shift: {3}\n'
+                         +'non-filo_ct: {4}\n'
+                         +'filo_ct: {5}\n'
+                         +'total_particles: {6}\n'
+                         +'slice_high_count: {7}\n'
+                         +'spot_coords_xyr: {8}\n'
+                         +'marker_coords: {9}\n'
+                         +'binary_thresh: {10}\n'
+                         +'valid: {11}'
+                         ).format(*list_of_vals)
+                        )
+#*********************************************************************************************#
+def missing_pgm_fixer(spot_to_scan, pass_counter, pass_per_spot_list,
+                      chip_name, filo_toggle = False):
     print("Missing pgm files... fixing...")
     vcount_dir = '../virago_output/'+ chip_name + '/vcounts'
     scans_counted = [int(file.split(".")[-1]) for file in pass_per_spot_list]
@@ -89,10 +108,10 @@ def missing_pgm_fixer(spot_to_scan, pass_counter, pass_per_spot_list, chip_name,
                                                       'pc', 'vertex1', 'vertex2',
                                                       'area', 'bbox_verts'])
             missing_filo_df.to_csv(filo_dir + '/' + missing_scan + '.filocount.csv')
-        with open(vcount_dir + '/' + missing_scan + '.vdata.txt', 'w') as vdata_file:
-            vdata_file.write("filename: %s \narea_sqmm: %d \nparticle_count: %d"
-                             % (missing_scan, 0, 0))
-        print("Writing blank data files for %s" % missing_scan)
+        missing_vals = list([missing_scan, 'N/A', 0, 'N/A', 'N/A',
+                            'N/A', 0, 'N/A', 'N/A', 'N/A', 'N/A', False])
+        write_vdata(vcount_dir, missing_scan, missing_vals)
+        print("Writing blank data files for {}".format(missing_scan))
 #*********************************************************************************************#
 def mirror_finder(pgm_list):
     mirror_file = str(glob.glob('*000.pgm')).strip("'[]'")
@@ -128,4 +147,15 @@ def determine_IRIS(nrows, ncols):
         mag = 40
         exo_toggle = False
     return cam_micron_per_pix, mag, exo_toggle
+#*********************************************************************************************#
+def _dict_matcher(_dict, spot_num, pass_num, mode = 'series'):
+    if mode == 'baseline': prev_pass = 1
+    elif mode == 'series': prev_pass = pass_num - 1
+    for key in _dict.keys():
+        split_key = key.split('.')
+        if (split_key[0] == str(spot_num)) &  (split_key[1] == str(prev_pass)):
+            prev_vals = _dict[key]
+        elif (split_key[0] == str(spot_num)) &  (split_key[1] == str(pass_num)):
+            new_vals = _dict[key]
+    return prev_vals, new_vals
 #*********************************************************************************************#

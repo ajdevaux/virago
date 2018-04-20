@@ -295,9 +295,10 @@ def histogram_averager(histogram_df, mAb_dict_rev, pass_counter):
         mean_histo_df = pd.concat((mean_histo_df, mean_spot_df), axis = 1)
     return mean_histo_df
 #*********************************************************************************************#
-def generate_combo_hist(histogram_df, chip_name, pass_counter, cont_str, cmap):
+def generate_combo_hist(histogram_df, chip_name, pass_counter, cont_window, cmap):
     """Generates a histogram figure for each pass in the IRIS experiment from a DataFrame representing the average data for every spot type"""
     histo_dir = ('../virago_output/'+chip_name+'/histograms')
+    cont_str = '{0}-{1}'.format(*cont_window)
     y_min = int(np.floor(np.min(np.min(histogram_df.drop('bins', axis = 1))) - 1))
     y_max = int(np.ceil(np.max(np.max(histogram_df.drop('bins', axis = 1))) + 1))
     if pass_counter < 10: passes_to_show = 1
@@ -343,16 +344,17 @@ def generate_combo_hist(histogram_df, chip_name, pass_counter, cont_str, cmap):
         print("File generated: " + fig_name)
         plt.clf()
 #*********************************************************************************************#
-def average_spot_data(spot_df, spot_set, pass_counter, chip_name):
+def average_spot_data(spot_df, spot_tuple, pass_counter, chip_name):
     """Creates a dataframe containing the average data for each antibody spot type"""
     averaged_df = pd.DataFrame()
-    for spot in spot_set:
+    for spot in spot_tuple:
         for i in range(1,pass_counter+1):
             time, density, norm_density = [],[],[]
             for ix, row in spot_df.iterrows():
                 scan_num = row['scan_number']
                 spot_type = row['spot_type']
-                if (scan_num == i) & (spot_type == spot):
+                validity = row['valid']
+                if (scan_num == i) & (spot_type == spot) & (validity == True):
                     time.append(row['scan_time'])
                     density.append(row['kparticle_density'])
                     norm_density.append(row['normalized_density'])
@@ -404,7 +406,7 @@ def generate_joyplot(joy_df, spot_counter, cont_window, chip_name, savedir):
     histo_dir = ('../virago_output/'+chip_name+'/histograms')
     num_graphs = len(scans)
     max_contrast = int(cont_window[1])
-    sns.set(style="white", rc={"axes.facecolor": (0, 0, 0, 0)})
+    sns.set(style=("white"), rc={"axes.facecolor": (0, 0, 0, 0)})
     pal = sns.cubehelix_palette(num_graphs, rot=-.25, light=.7)
     g = sns.FacetGrid(joy_df, row="scan_ID",
                       hue="scan_ID", aspect=(1.5 * num_graphs), size= (5 / num_graphs),
@@ -440,46 +442,49 @@ def generate_joyplot(joy_df, spot_counter, cont_window, chip_name, savedir):
     g.savefig(histo_dir + '/' + fig_name, bbox_inches = 'tight', dpi = 150)
     print("File generated: " + fig_name)
 #*********************************************************************************************#
-def generate_timeseries(spot_df, averaged_df, mAb_dict, spot_set,
+def generate_timeseries(spot_df, averaged_df, mAb_dict, spot_tuple,
                          chip_name, sample_name, vhf_colormap, cont_window,
                          scan_or_time = 'scan'):
     """Generates a timeseries for the cumulate particle counts for each spot, and plots the average
     for each spot type"""
     baseline_toggle = input("Do you want the time series chart normalized to baseline? ([y]/n)\t")
-    cont_str = str(cont_window[0]) + '-' + str(cont_window[1])
+    cont_str = '{0}-{1}'.format(*cont_window)
     assert isinstance(baseline_toggle, str)
     if baseline_toggle.lower() in ('no', 'n'):
         filt_toggle = 'kparticle_density'
-        avg_filt_toggle = 'avg_kparticle_density'
-        stdev_filt_toggle = 'kparticle_density_std'
+        # avg_filt_toggle = 'avg_kparticle_density'
+        # stdev_filt_toggle = 'kparticle_density_std'
     else:
         filt_toggle = 'normalized_density'
-        avg_filt_toggle = 'avg_normalized_density'
-        stdev_filt_toggle = 'normalized_density_std'
+        # avg_filt_toggle = 'avg_normalized_density'
+        # stdev_filt_toggle = 'normalized_density_std'
         print("Normalizing...")
 
+    sns.set(style="ticks")
     fig = plt.figure(figsize = (8,6))
     ax1 = fig.add_subplot(111)
-    n,c = 1,0
-    for key in mAb_dict.keys():
-        if scan_or_time == 'scan':
-            x_axis = spot_df[spot_df['spot_number'] == key]['scan_number'].reset_index(drop = True)
-        elif scan_or_time == 'time':
-            x_axis = spot_df[spot_df['spot_number'] == key]['scan_time'].reset_index(drop = True)
-        density_y = spot_df[spot_df['spot_number'] == key][filt_toggle].reset_index(drop = True)
-        while n > 1:
-            if mAb_dict[n-1] != mAb_dict[n]:
-                c += 1
-                break
-            else:
-                break
-        ax1.plot(x_axis, density_y, marker = '+', linewidth = 1,
-                     color = vhf_colormap[c], alpha = 0.4, label = '_nolegend_')
-        n += 1
-    ax2 = fig.add_subplot(111)
 
-    for n, spot in enumerate(spot_set):
-        avg_data = averaged_df[averaged_df['spot_type'].str.contains(spot)]
+    for key in mAb_dict.keys():
+        if key == 1:
+            c = 0
+        elif (mAb_dict[key-1] != mAb_dict[key]):
+            c += 1
+            # else: break
+        print(key,c)
+        solo_spot_df = spot_df[(spot_df.spot_number == key) & (spot_df.valid == True)]
+        if not solo_spot_df.empty:
+            if scan_or_time == 'scan':
+                x_axis = solo_spot_df['scan_number'].reset_index(drop = True)
+            elif scan_or_time == 'time':
+                x_axis = solo_spot_df['scan_time'].reset_index(drop = True)
+            density_y = solo_spot_df[filt_toggle].reset_index(drop = True)
+            ax1.plot(x_axis, density_y, linewidth = 1,
+                     color = vhf_colormap[c], alpha = 0.5, label = '_nolegend_')
+
+    ax2 = fig.add_subplot(111)
+    for n, spot in enumerate(spot_tuple):
+        avg_data = averaged_df[averaged_df['spot_type'] == spot]
+        print(spot)
         if scan_or_time == 'scan':
             avg_x = avg_data['scan_number']
         else:
@@ -487,9 +492,9 @@ def generate_timeseries(spot_df, averaged_df, mAb_dict, spot_set,
         avg_density_y = avg_data['avg_norm_density']
         errorbar_y = avg_data['std_norm_density']
         ax2.errorbar(avg_x, avg_density_y,
-                        yerr = errorbar_y, marker = 'o', label = spot_set[n],
-                        linewidth = 2, elinewidth = 1, capsize = 3,
-                        color = vhf_colormap[n], alpha = 0.9, aa = True)
+                        yerr = errorbar_y, label = spot_tuple[n],
+                        linewidth = 2, elinewidth = 1,
+                        color = vhf_colormap[n], aa = True)
 
     ax2.legend(loc = 'upper left', fontsize = 12, ncol = 1)
     if max(spot_df.scan_number) < 10: x_grid = 1
@@ -500,12 +505,12 @@ def generate_timeseries(spot_df, averaged_df, mAb_dict, spot_set,
 
     elif scan_or_time == 'time':
         plt.xlabel("Time (min)", size = 14)
-        plt.xticks(np.arange(0, max(spot_df.scan_time) + 1, x_grid), size = 12)
+        plt.xticks(np.arange(0, max(spot_df.scan_time) + 1, 5), size = 12)
 
     plt.ylabel('Particle Density (kparticles/sq. mm)\n' + cont_str + '% Contrast', size = 12)
 
     plt.yticks(color = 'k', size = 12)
-    plt.title(chip_name + ' Time Series of ' + sample_name)
+    plt.title("{} Time Series of {}".format(chip_name, sample_name))
 
     plt.axhline(linestyle = '--', color = 'gray')
 
@@ -519,7 +524,8 @@ def generate_timeseries(spot_df, averaged_df, mAb_dict, spot_set,
 def generate_barplot(spot_df, pass_counter, cont_window, chip_name, sample_name):
     """Generates a barplot for the dataset. Most useful for before and after scans (pass count == 2)"""
     firstlast_spot_df = spot_df[(spot_df.scan_number == 1) | (spot_df.scan_number == pass_counter)]
-    cont_str = str(cont_window[0]) + '-' + str(cont_window[1])
+    # cont_str = str(cont_window[0]) + '-' + str(cont_window[1])
+    cont_str = '{0}-{1}'.format(*cont_window)
     final_spot_df = firstlast_spot_df[firstlast_spot_df.scan_number == pass_counter]
 
     fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(8, 6), sharey=True)

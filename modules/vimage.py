@@ -6,6 +6,7 @@ import numpy as np
 from scipy.stats import norm, gamma
 from skimage import exposure, feature, transform, filters, util, measure, morphology, io
 import math, warnings
+from modules.vpipes import _dict_matcher
 #*********************************************************************************************#
 #
 #           SUBROUTINES
@@ -201,7 +202,7 @@ def masker_3D(image_stack, mask, filled = False, fill_val = 0):
     else:
         return pic3D_filled
 #*********************************************************************************************#
-def measure_rotation(marker_dict, spot_pass_str, rotation_dict):
+def measure_rotation(marker_dict, spot_pass_str):
     """Measures how rotated the image is compared to the previous scan"""
     if len(marker_dict[spot_pass_str]) == 2:
         r1 = marker_dict[spot_pass_str][0][0]
@@ -213,27 +214,23 @@ def measure_rotation(marker_dict, spot_pass_str, rotation_dict):
         if (col_diff < row_diff) & (col_diff < 15):
             print("Markers vertically aligned")
             img_rot_deg = math.degrees(math.atan(col_diff / row_diff))
+            print("\nImage rotation: {}\n".format(img_rot_deg))
         elif (row_diff < col_diff) & (row_diff < 15):
             print("Markers horizontally aligned")
             img_rot_deg = math.degrees(math.atan(row_diff / col_diff))
+            print("\nImage rotation: {}\n".format(img_rot_deg))
         else:
-            print("Markers unaligned")
+            print("Markers unaligned; cannot compute rotation")
             img_rot_deg = np.nan
     else:
-        print("Wrong number of markers")
+        print("Wrong number of markers; cannot compute rotation")
         img_rot_deg = np.nan
-    rotation_dict[spot_pass_str] = img_rot_deg
-    return rotation_dict
+    return img_rot_deg
 #*********************************************************************************************#
 def measure_shift(marker_dict, pass_num, spot_num):
     overlay_toggle = True
     if pass_num > 1:
-        for key in marker_dict.keys():
-            split_key = key.split('.')
-            if (split_key[0] == str(spot_num)) &  (split_key[1] == str(pass_num - 1)):
-                prev_locs = marker_dict[key]
-            elif (split_key[0] == str(spot_num)) &  (split_key[1] == str(pass_num)):
-                new_locs = marker_dict[key]
+        prev_locs, new_locs = _dict_matcher(marker_dict, spot_num, pass_num, mode = 'series')
         plocs_ct = len(prev_locs)
         nlocs_ct = len(new_locs)
         if (plocs_ct > 0) & (nlocs_ct > 0) & (plocs_ct != nlocs_ct):
@@ -272,17 +269,10 @@ def measure_shift(marker_dict, pass_num, spot_num):
 #*********************************************************************************************#
 def overlayer(overlay_dict, overlay_toggle, spot_num, pass_num,
               mean_shift, overlay_dir, mode ='baseline'):
-    if mode == 'baseline': first_image = 1
-    if mode == 'series': first_image = pass_num - 1
     vshift = int(np.ceil(mean_shift[0]))
     hshift = int(np.ceil(mean_shift[1]))
     if (pass_num > 1) & (overlay_toggle == True):
-        for key in overlay_dict.keys():
-            split_key = key.split('.')
-            if (split_key[0] == str(spot_num)) & (split_key[1] == str(first_image)):
-                bot_img = overlay_dict[key]
-            elif (split_key[0] == str(spot_num)) &  (split_key[1] == str(pass_num)):
-                top_img = overlay_dict[key]
+        bot_img, top_img = _dict_matcher(overlay_dict, spot_num, pass_num, mode = mode)
 
         try: bot_img
         except NameError: print("Cannot overlay images")
