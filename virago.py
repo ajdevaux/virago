@@ -1,19 +1,18 @@
-#! /usr/local/bin/python3
+#!/usr/bin/env python3
 from __future__ import division
 from future.builtins import input
 from datetime import datetime
-from lxml import etree
-import matplotlib.pyplot as plt
-# from matplotlib import cm
+# from lxml import etree
+# import matplotlib.pyplot as plt
 import pandas as pd
 import numpy as np
-import seaborn as sns
-from scipy import stats
-from skimage import exposure, feature, transform, filters, measure, morphology
+# import seaborn as sns
+# from scipy import stats
+# from skimage import exposure, feature, transform, filters, measure, morphology
 from skimage import io as skio
 import glob, os, math
 from modules import vpipes, vimage, vquant, vgraph
-from modules import ebovchan as ebc
+# from modules import ebovchan as ebc
 from images import logo
 
 pd.set_option('display.width', 1000)
@@ -166,7 +165,6 @@ if pgm_toggle.lower() not in ('no', 'n'):
             pic3D_orig = pic3D.copy()
 
             zslice_count, nrows, ncols = pic3D.shape
-            row, col = np.ogrid[:nrows,:ncols]
 
             cam_micron_per_pix, mag, exo_toggle = vpipes.determine_IRIS(nrows, ncols)
 
@@ -191,8 +189,7 @@ if pgm_toggle.lower() not in ('no', 'n'):
             if pic3D.shape[0] > 1: mid_pic = int(np.floor(zslice_count/2))
             else: mid_pic = 0
 
-            norm_scalar = np.median(pic3D) * 2
-            pic3D_norm = pic3D / norm_scalar
+            pic3D_norm = pic3D / (np.median(pic3D) * 2)
 
             pic3D_norm[pic3D_norm > 1] = 1
 
@@ -212,13 +209,14 @@ if pgm_toggle.lower() not in ('no', 'n'):
             img_rotation = vimage.measure_rotation(marker_dict, spot_pass_str)
             rotation_dict[spot_pass_str] = img_rotation
 
-            mean_shift, overlay_toggle = vimage.measure_shift(marker_dict, pass_num, spot_num)
+            if pass_counter <= 3: overlay_mode = 'series'
+            else: overlay_mode = 'baseline'
+
+            mean_shift, overlay_toggle = vimage.measure_shift(marker_dict, pass_num,
+                                                              spot_num, mode = overlay_mode)
             shift_dict[spot_pass_str] = mean_shift
 
             overlay_dict[spot_pass_str] = pic_maxmin
-
-            if pass_counter <= 3: overlay_mode = 'series'
-            else: overlay_mode = 'baseline'
             if overlay_toggle == True:
                 img_overlay = vimage.overlayer(overlay_dict, overlay_toggle, spot_num, pass_num,
                                                 mean_shift, overlay_dir, mode = overlay_mode)
@@ -239,7 +237,7 @@ if pgm_toggle.lower() not in ('no', 'n'):
                                                     center_mode = False)
                 circle_dict[spot_num] = xyr
 
-
+            row, col = np.ogrid[:nrows,:ncols]
             width = col - xyr[0]
             height = row - xyr[1]
             rad = xyr[2] - 50
@@ -619,7 +617,7 @@ if len(vcount_csv_list) >= total_pgms:
         cont_window = cont_window.split("-")
     # cont_str = str(cont_window[0]) + '-' + str(cont_window[1])
     cont_str = '{0}-{1}'.format(*cont_window)
-    particle_counts_vir, particle_dict = vquant.vir_csv_reader(chip_name, vcount_csv_list, cont_window)
+    particle_counts_vir, particle_dict = vquant.vir_csv_reader(vcount_csv_list, cont_window)
 
     particle_count_col = str('particle_count_' + cont_str)
     spot_df[particle_count_col] = particle_counts_vir
@@ -640,7 +638,7 @@ if len(vcount_csv_list) >= total_pgms:
     if filo_toggle is True:
         os.chdir('../filo')
         fcount_csv_list = sorted(glob.glob(chip_name +'*.filocount.csv'))
-        filo_counts, filament_dict = vquant.vir_csv_reader(chip_name, fcount_csv_list,cont_window)
+        filo_counts, filament_dict = vquant.vir_csv_reader(fcount_csv_list,cont_window)
         spot_df['filo_ct'] = filo_counts
         particle_counts_vir = [p + f for p, f in zip(particle_counts_vir, filo_counts)]
 
