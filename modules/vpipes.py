@@ -1,4 +1,3 @@
-#! /usr/local/bin/python3
 from __future__ import division
 from future.builtins import input
 from lxml import etree
@@ -6,7 +5,7 @@ import pandas as pd
 import numpy as np
 import seaborn as sns
 from skimage import io as skio
-import os, json, math, warnings, sys, glob
+import os, json, math, warnings, sys, glob, zipfile
 #*********************************************************************************************#
 #
 #           SUBROUTINES
@@ -23,7 +22,6 @@ def chip_file_reader(xml_file):
             text = "None"
         else:
             text = elem.text
-        #print(elem.tag + " => " + text)
         chip_dict[elem.tag] = text
         if elem.tag == "spot":
             chip_file.append(chip_dict)
@@ -74,13 +72,13 @@ def write_vdata(dir, filename, list_of_vals):
                          'filename: {0}\n'
                          +'spot_type: {1}\n'
                          +'area_sqmm: {2}\n'
-                         +'image_shift: {3}\n'
+                         +'image_shift_RC: {3}\n'
                          +'non-filo_ct: {4}\n'
                          +'filo_ct: {5}\n'
                          +'total_particles: {6}\n'
                          +'slice_high_count: {7}\n'
                          +'spot_coords_xyr: {8}\n'
-                         +'marker_coords: {9}\n'
+                         +'marker_coords_RC: {9}\n'
                          +'binary_thresh: {10}\n'
                          +'valid: {11}'
                          ).format(*list_of_vals)
@@ -148,14 +146,15 @@ def determine_IRIS(nrows, ncols):
         exo_toggle = False
     return cam_micron_per_pix, mag, exo_toggle
 #*********************************************************************************************#
-def _dict_matcher(_dict, spot_num, pass_num, mode = 'series'):
-    if mode == 'baseline': prev_pass = 1
-    elif mode == 'series': prev_pass = pass_num - 1
-    for key in _dict.keys():
-        split_key = key.split('.')
-        if (split_key[0] == str(spot_num)) &  (split_key[1] == str(prev_pass)):
-            prev_vals = _dict[key]
-        elif (split_key[0] == str(spot_num)) &  (split_key[1] == str(pass_num)):
-            new_vals = _dict[key]
-    return prev_vals, new_vals
-#*********************************************************************************************#
+def zipper(filename, filelist, dir = os.getcwd(), compression = 'bz2'):
+    if compression == '7z':
+        zMODE = zipfile.ZIP_LZMA
+    elif compression =='zip':
+        zMODE = zipfile.ZIP_DEFLATED
+    elif compression == 'bz2':
+        zMODE = zipfile.ZIP_BZIP2
+
+    zf = zipfile.ZipFile(dir +'/'+filename+'.'+compression, mode='w')
+    for file in filelist:
+        zf.write(file,compress_type=zMODE)
+        print("{} added to {}.{}".format(file, filename, compression))
