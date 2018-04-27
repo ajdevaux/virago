@@ -2,17 +2,11 @@
 from __future__ import division
 from future.builtins import input
 from datetime import datetime
-# from lxml import etree
-# import matplotlib.pyplot as plt
 import pandas as pd
 import numpy as np
-# import seaborn as sns
-# from scipy import stats
-# from skimage import exposure, feature, transform, filters, measure, morphology
 from skimage import io as skio
 import glob, os, math
 from modules import vpipes, vimage, vquant, vgraph
-# from modules import ebovchan as ebc
 from images import logo
 
 pd.set_option('display.width', 1000)
@@ -27,11 +21,20 @@ IRISmarker_liq = skio.imread('images/IRISmarker_maxmin_v5.tif')
 IRISmarker_exo = skio.imread('images/IRISmarker_maxmin_v4.tif')
 
 pgm_list = []
-while pgm_list == []: ##Keep repeating until pgm files are found
+zip_list = []
+while (pgm_list == []) and (zip_list == []): ##Keep repeating until pgm files are found
     iris_path = input("\nPlease type in the path to the folder that contains the IRIS data:\n")
     iris_path = iris_path.strip('"')##Point to the correct directory
     os.chdir(iris_path)
     pgm_list = sorted(glob.glob('*.pgm'))
+    zip_list = sorted(glob.glob('*.bz2'))
+if pgm_list:
+    archive_mode = False
+else:
+    archive_mode = True
+    print("\nArchive extraction mode\n")
+
+
 
 txt_list = sorted(glob.glob('*.txt'))
 pgm_set = set([".".join(file.split(".")[:3]) for file in pgm_list])
@@ -78,44 +81,53 @@ spot_df = pd.DataFrame([])
 spot_list = [int(file[1]) for file in txtcheck if (len(file) > 2) and (file[2].isalpha())]
 
 pass_counter = int(max([pgm.split(".")[2] for pgm in pgm_list]))##Important
+if pass_counter > 3: timeseries_mode = 'time'
+else: timeseries_mode = 'scan'
 
 scanned_spots = set(np.arange(1,spot_counter+1,1))
-missing_spots = scanned_spots.difference(spot_list)
-miss_txt = 1
-for txtfile in iris_txt:
-    if miss_txt in missing_spots:
-        print('Missing text file:  ' + str(miss_txt))
-        miss_list = pd.Series(list(str(miss_txt))*pass_counter)
-        blanks = pd.DataFrame(np.zeros((pass_counter,3)))
-        blanks.insert(0,'spot_number', miss_list)
-        miss_txt += 1
+missing_spots = tuple(scanned_spots.difference(spot_list))
+for val in missing_spots:
+    iris_txt.insert(val-1,val)
 
-    txtdata = pd.read_table(txtfile, sep = ':', error_bad_lines = False,
+for ix, txtfile in enumerate(iris_txt):
+    spot_data_solo = pd.DataFrame({'spot_number': [ix+1] * pass_counter,
+                                   'scan_number': range(1,pass_counter + 1),
+                                   'spot_type': [mAb_dict[ix+1]]*pass_counter
+                                   })
+    if not type(txtfile) is str:
+        print("Missing text file for spot {}".format(txtfile))
+        # spot_data_solo['spot_number']= [txtfile] * pass_counter
+        # spot_data_solo['spot_type'] = [mAb_dict[txtfile]] * pass_counter
+        spot_data_solo['scan_time'] = [0] * pass_counter
+
+    else:
+        txtdata = pd.read_table(txtfile, sep = ':', error_bad_lines = False,
                             header = None, index_col = 0, usecols = [0, 1])
-    expt_date = txtdata.loc['experiment_start'][1].split(" ")[0]
-    pass_labels = [row for row in txtdata.index if row.startswith('pass_time')]
-    spot_idxs = pd.Series(list(txtdata.loc['spot_index']) * pass_counter)
-    pass_list = pd.Series(np.arange(1,pass_counter + 1))
-    spot_types = pd.Series(list([mAb_dict[int(txtfile.split(".")[1])]]) * pass_counter)
+        expt_date = txtdata.loc['experiment_start'][1].split(" ")[0]
 
-    times_s = pd.Series(txtdata.loc[pass_labels].values.flatten().astype(np.float))
+        # spot_data_solo['spot_number'] = [txtdata.loc['spot_index']] * pass_counter
+        # spot_data_solo['spot_type'] = [mAb_dict[int(txtfile.split(".")[1])]] * pass_counter
 
-    times_min = round(times_s / 60,2)
-    pass_diff = pass_counter - len(pass_labels)
-    if pass_diff > 0:
-        times_min = times_min.append(pd.Series(np.zeros(pass_diff)), ignore_index = True)
-    print('File scanned:  ' + txtfile)
-    miss_txt += 1
-    if (times_min == 0).any(): timeseries_mode = 'scan'
-    else: timeseries_mode = 'time'
-    spot_data_solo = pd.concat([spot_idxs.rename('spot_number').astype(int),
-                                pass_list.rename('scan_number').astype(int),
-                                times_min.rename('scan_time'),
-                                spot_types.rename('spot_type')], axis = 1)
+        pass_labels = [row for row in txtdata.index if row.startswith('pass_time')]
+        times_s = txtdata.loc[pass_labels].values.flatten().astype(np.float)
+        pass_diff = pass_counter - len(pass_labels)
+        if pass_diff > 0:
+            np.append(times_s, [0] * pass_diff)
+        spot_data_solo['scan_time'] = np.round(times_s / 60,2)
+
+        print('File scanned:  {}'.format(txtfile))
+
+        # if (times_min == 0).any(): timeseries_mode = 'scan'
+        # else: timeseries_mode = 'time'
+    # spot_data_solo = pd.concat([spot_idxs.astype(int),
+    #                             pass_list.astype(int),
+    #                             times_min,
+    #                             spot_types,
+    #                             axis = 1
+    #                             )
     spot_df = spot_df.append(spot_data_solo, ignore_index = True)
-#*********************************************************************************************#
-# spot_labels = [[val]*(pass_counter) for val in mAb_dict.values()]
-
+# spot_df.rename(columns={0:'spot_number',1:'scan_number',2:'scan_time',3:'spot_type'},
+#                inplace=True)
 #*********************************************************************************************#
 # PGM Scanning
 spot_to_scan = 1
@@ -131,26 +143,23 @@ if pgm_toggle.lower() not in ('no', 'n'):
     tracking_dict = {}
     while spot_to_scan <= spot_counter:
 
-        pass_per_spot_list = sorted([file for file in pgm_set
+        pps_list = sorted([file for file in pgm_set
                                     if int(file.split(".")[1]) == spot_to_scan])
-        passes_per_spot = len(pass_per_spot_list)
-        scan_range = range(0,passes_per_spot,1)
+        passes_per_spot = len(pps_list)
 
         if passes_per_spot != pass_counter:
-            vpipes.missing_pgm_fixer(spot_to_scan, pass_counter, pass_per_spot_list,
+            vpipes.missing_pgm_fixer(spot_to_scan, pass_counter, pps_list,
                                      chip_name, filo_toggle)
         spot_to_scan += 1
 
-        for scan in scan_range:
-            scan_list = [file for file in pgm_list if file.startswith(pass_per_spot_list[scan])]
+        for scan in range(0,passes_per_spot,1):
+            scan_list = [file for file in pgm_list if file.startswith(pps_list[scan])]
             dpi = 96
             validity = True
 
             fluor_files = [file for file in scan_list if file.split(".")[-2] in 'ABC']
             if fluor_files:
-
                 scan_list = [file for file in scan_list if file not in fluor_files]
-
                 print("\nFluorescent channel(s) detected: {}\n".format(fluor_files))
 
             scan_collection = skio.imread_collection(scan_list)
@@ -158,10 +167,10 @@ if pgm_toggle.lower() not in ('no', 'n'):
             spot_num = int(pgm_name[1])
             pass_num = int(pgm_name[2])
             spot_pass_str = str(spot_num) +'.'+ str(pass_num)
-            png = '.'.join(pgm_name[:3])
+            img_name = '.'.join(pgm_name[:3])
             spot_type = mAb_dict[spot_num]
 
-            pic3D = np.array([pic for pic in scan_collection])
+            pic3D = np.array([pic for pic in scan_collection], dtype='uint16')
             pic3D_orig = pic3D.copy()
 
             zslice_count, nrows, ncols = pic3D.shape
@@ -172,7 +181,7 @@ if pgm_toggle.lower() not in ('no', 'n'):
                 min_sig = 0.5
                 max_sig = 5
                 DoG_thresh = 0.05
-                cv_thresh = 0.04
+                cv_thresh = 0.05
                 IRISmarker = IRISmarker_exo
                 timeseries_mode = 'scan'
             else:
@@ -209,7 +218,7 @@ if pgm_toggle.lower() not in ('no', 'n'):
             img_rotation = vimage.measure_rotation(marker_dict, spot_pass_str)
             rotation_dict[spot_pass_str] = img_rotation
 
-            if pass_counter <= 3: overlay_mode = 'series'
+            if pass_counter <= 10: overlay_mode = 'series'
             else: overlay_mode = 'baseline'
 
             mean_shift, overlay_toggle = vimage.measure_shift(marker_dict, pass_num,
@@ -221,8 +230,11 @@ if pgm_toggle.lower() not in ('no', 'n'):
                 img_overlay = vimage.overlayer(overlay_dict, overlay_toggle, spot_num, pass_num,
                                                 mean_shift, overlay_dir, mode = overlay_mode)
                 if img_overlay is not None:
-                    img_name = png + "_overlay.png"
-                    vimage.gen_img(img_overlay, name = img_name, savedir = overlay_dir, show = False)
+                    overlay_name = "{}_overlay_{}".format(img_name, overlay_mode)
+                    vimage.gen_img(img_overlay,
+                                   name = overlay_name,
+                                   savedir = overlay_dir,
+                                   show = False)
 
             if spot_num in circle_dict:
                 xyr = circle_dict[spot_num]
@@ -274,15 +286,20 @@ if pgm_toggle.lower() not in ('no', 'n'):
                                                         *len(tracking_dict[spot_pass_str])
                                                         )
             if pass_num == 2:
-                prev_part_df, new_part_df = vpipes._dict_matcher(tracking_dict,
+                prev_part_df, new_part_df = vimage._dict_matcher(tracking_dict,
                                                                  spot_num, pass_num,
                                                                  mode = 'series')
                 new_part_df['y'] = new_part_df['y'] + mean_shift[0]
                 new_part_df['x'] = new_part_df['x'] + mean_shift[1]
-                tracking_df = pd.concat([prev_part_df, new_part_df])
-            elif pass_num > 2:
-                tracking_df = tracking_df.append(tracking_dict[spot_pass_str])
+                tracking_df = pd.concat([prev_part_df, new_part_df], ignore_index = True)
 
+            elif pass_num > 2:
+                tracking_df = tracking_df.append(tracking_dict[spot_pass_str], ignore_index = True)
+
+            # if spot_to_scan == spot_counter:
+
+                # new_df,round_cols=vquant.coord_rounder(tracking_df, val = 3)
+                # new_df.sort_values(by=round_cols, inplace=True)
 
 
 
@@ -298,7 +315,7 @@ if pgm_toggle.lower() not in ('no', 'n'):
 
             slice_counts = particle_df.z.value_counts()
             high_count = int(slice_counts.index[0] - 1)
-            if high_count <= 0:
+            if high_count < 0:
                 validity = False
                 print("\nSpot {}, scan {} is poor quality".format(spot_num, scan))
             print("\nSlice with highest count: {}".format(high_count+1))
@@ -368,7 +385,7 @@ if pgm_toggle.lower() not in ('no', 'n'):
                 #                             spot_coords = xyr,
                 #                             res = pix_per_micron,
                 #                             cmap = 'plasma',
-                #                             im_name = png +'_fluorA',
+                #                             im_name = img_name +'_fluorA',
                 #                             show_image = False,
                 #                             show_info = False)
                 # fluor_df.to_csv(virago_dir + '/' + chip_name + '_fluor_data.csv')
@@ -447,14 +464,14 @@ if pgm_toggle.lower() not in ('no', 'n'):
                     # print("y = %.6fx + (%.6f)" %(fit[0],fit[1]))
                     # subplot.set_xlabel("Visible Percent Contrast", color = 'k')
                     # subplot.set_ylabel("Fluorescent Percent Contrast", color = 'k')
-                    # # plt.title = (png + ": Correlation of Visible Particle Size"
+                    # # plt.title = (img_name + ": Correlation of Visible Particle Size"
                     # #                  + "with Fluorescent Signal")
 
                     # vis_fluor_scatter = sns.jointplot(x = "percent_contrast_vis",
                     #                                   y = "percent_contrast_fluor",
                     #               data = merge_df, kind = "reg", color = "green")
                     # vis_fluor_scatter.savefig(virago_dir + '/'
-                    #                  + png + "_fluor_scatter.png",
+                    #                  + img_name + "_fluor_scatter.png",
                     #                  bbox_inches = 'tight', pad_inches = 0.1, dpi = 300)
                     # plt.show()
                     # plt.clf(); plt.close('all')
@@ -510,7 +527,7 @@ if pgm_toggle.lower() not in ('no', 'n'):
                             filo_df.reset_index(drop = True, inplace = True)
 
                             filo_df.rename(columns = {'filo_pc':'pc'}, inplace = True)
-                            filo_df.to_csv(filo_dir + '/' + png + '.filocount.csv',
+                            filo_df.to_csv(filo_dir + '/' + img_name + '.filocount.csv',
                                                 columns = ['centroid_bin',
                                                            'label_skel',
                                                            'filament_length_um',
@@ -529,15 +546,15 @@ if pgm_toggle.lower() not in ('no', 'n'):
                                                                   "alpha": 1,
                                                                   "range":(0,5),
                                                                   "color":"red"})
-                            plt.title(png)
+                            plt.title(img_name)
                             plt.ylabel('Filament count')
-                            plt.savefig(filo_dir + '/' +  png + '_filo_histo.png',
+                            plt.savefig(filo_dir + '/' +  img_name + '_filo_histo.png',
                                        bbox_inches = 'tight', pad_inches = 0.1, dpi = 300)
                             plt.close('all')
 
-                        else: filo_df = ebc.no_filos(filo_dir, png)
-                    else: filo_df = ebc.no_filos(filo_dir, png)
-                else: filo_df = ebc.no_filos(filo_dir, png)
+                        else: filo_df = ebc.no_filos(filo_dir, img_name)
+                    else: filo_df = ebc.no_filos(filo_dir, img_name)
+                else: filo_df = ebc.no_filos(filo_dir, img_name)
             else: filo_df = pd.DataFrame([]); bin_thresh = 0
 
             particle_count = len(particle_df)
@@ -551,12 +568,12 @@ if pgm_toggle.lower() not in ('no', 'n'):
             else:
                 print("\nParticles counted: {}".format(particle_count))
 
-            particle_df.to_csv(vcount_dir + '/' + png + '.vcount.csv')
-            vdata_vals = tuple([png, spot_type, area_sqmm, mean_shift,
+            particle_df.to_csv(vcount_dir + '/' + img_name + '.vcount.csv')
+            vdata_vals = tuple([img_name, spot_type, area_sqmm, mean_shift,
                               particle_count, filo_ct, total_particles,
                               high_count+1, xyr, marker_locs, bin_thresh,
                               validity])
-            vpipes.write_vdata(vcount_dir, png, vdata_vals)
+            vpipes.write_vdata(vcount_dir, img_name, vdata_vals)
 
 #---------------------------------------------------------------------------------------------#
         ####Processed Image Renderer
@@ -568,7 +585,7 @@ if pgm_toggle.lower() not in ('no', 'n'):
             #                   pic_edge = pic_binary,
             #                   chip_name = chip_name,
             #                   save = False,
-            #                   png = png)
+            #                   png = img_name)
 
             vgraph.processed_image_viewer(pic_to_show,
                                            particle_df = particle_df,
@@ -576,12 +593,12 @@ if pgm_toggle.lower() not in ('no', 'n'):
                                            res = pix_per_micron,
                                            filo_df = filo_df,
                                            markers = marker_locs,
-                                           show_particles = False,
+                                           show_particles = True,
                                            show_markers = True,
                                            show_filaments = False,
                                            show_info = False,
                                            chip_name = chip_name,
-                                           im_name = png,
+                                           im_name = img_name,
                                            exo_toggle = exo_toggle,
                                            show_image = False
                                            )
@@ -615,7 +632,6 @@ if len(vcount_csv_list) >= total_pgms:
         cont_window = str(input("\nPlease enter two values separated by a dash.\n"))
     else:
         cont_window = cont_window.split("-")
-    # cont_str = str(cont_window[0]) + '-' + str(cont_window[1])
     cont_str = '{0}-{1}'.format(*cont_window)
     particle_counts_vir, particle_dict = vquant.vir_csv_reader(vcount_csv_list, cont_window)
 
@@ -629,7 +645,7 @@ if len(vcount_csv_list) >= total_pgms:
                 (key, val) = line.split(":")
                 full_text[key] = val.strip("\n")
             area = float(full_text['area_sqmm'])
-            validity = bool(full_text['valid'])
+            validity = full_text['valid'].strip()
         area_list.append(area)
         valid_list.append(validity)
     spot_df['area'] = area_list
@@ -644,9 +660,8 @@ if len(vcount_csv_list) >= total_pgms:
 
     kparticle_density = np.round(np.array(particle_counts_vir) / area_list * 0.001,3)
     spot_df['kparticle_density'] = kparticle_density
-    # valid_list = [True] * len(spot_df)
-    spot_df['valid'] = valid_list
-    spot_df.loc[spot_df.kparticle_density.isnull(), 'valid'] = False
+    # spot_df['valid'] = valid_list
+    spot_df.loc[spot_df.kparticle_density == 0, 'valid'] = False
     os.chdir(iris_path)
 elif len(vcount_csv_list) != total_pgms:
     pgms_remaining = total_pgms - len(vcount_csv_list)
@@ -700,14 +715,14 @@ if float(cont_window[0]) == 0:
         if not joyplot_df.empty:
             vgraph.generate_joyplot(joyplot_df, spot, cont_window, chip_name, savedir=histo_dir)
 
-normalized_density = vquant.density_normalizer(spot_df, pass_counter, spot_list)
-len_diff = len(spot_df) - len(normalized_density)
-if len_diff != 0:
-    normalized_density = np.append(np.asarray(normalized_density),np.full(len_diff, np.nan))
+normalized_density = vquant.density_normalizer(spot_df, spot_counter)
+# len_diff = len(spot_df) - len(normalized_density)
+# if len_diff != 0:
+#     normalized_density.append([np.nan]*len_diff) = np.append(np.asarray(normalized_density),np.full(len_diff, np.nan))
 spot_df['normalized_density'] = normalized_density
 
 
-averaged_df = vgraph.average_spot_data(spot_df, spot_tuple, pass_counter, chip_name)
+averaged_df = vgraph.average_spot_data(spot_df, spot_tuple, pass_counter)
 
 if pass_counter > 2:
     vgraph.generate_timeseries(spot_df, averaged_df, mAb_dict, spot_tuple,
