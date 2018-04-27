@@ -6,7 +6,7 @@ import numpy as np
 from scipy.stats import norm, gamma
 from skimage import exposure, feature, transform, filters, util, measure, morphology, io
 import math, warnings
-from modules.vpipes import _dict_matcher
+# from vpipes import _dict_matcher
 #*********************************************************************************************#
 #
 #           SUBROUTINES
@@ -95,7 +95,7 @@ def gen_img(image, name = 'default', savedir = '', cmap = 'gray', dpi = 96, show
     if show == True: plt.show()
     plt.close('all')
 #*********************************************************************************************#
-def display(im3D, cmap = "gray", step = 1):
+def gen_img3D(im3D, cmap = "gray", step = 1):
     """Debugging function for viewing all image files in a stack"""
     _, axes = plt.subplots(nrows = int(np.ceil(zslice_count/4)),
                            ncols = 4,
@@ -107,6 +107,7 @@ def display(im3D, cmap = "gray", step = 1):
         ax.imshow(image, cmap=cmap, vmin=vmin, vmax=vmax)
         ax.set_xticks([])
         ax.set_yticks([])
+        ax.set_axis_off()
 
     plt.show()
     plt.close('all')
@@ -114,6 +115,7 @@ def display(im3D, cmap = "gray", step = 1):
 def marker_finder(image, marker, thresh = 0.9, gen_mask = False):
     """This locates the "backwards-L" shapes in the IRIS images"""
     marker_match = feature.match_template(image, marker, pad_input = True)
+    # gen_img(marker_match, show=True)
     locs = feature.peak_local_max(marker_match,
                                   min_distance = 100,
                                   threshold_rel = thresh,
@@ -204,7 +206,8 @@ def masker_3D(image_stack, mask, filled = False, fill_val = 0):
 #*********************************************************************************************#
 def measure_rotation(marker_dict, spot_pass_str):
     """Measures how rotated the image is compared to the previous scan"""
-    if len(marker_dict[spot_pass_str]) == 2:
+    marker_ct = len(marker_dict[spot_pass_str])
+    if marker_ct == 2:
         r1 = marker_dict[spot_pass_str][0][0]
         r2 = marker_dict[spot_pass_str][1][0]
         c1 = marker_dict[spot_pass_str][0][1]
@@ -214,23 +217,34 @@ def measure_rotation(marker_dict, spot_pass_str):
         if (col_diff < row_diff) & (col_diff < 15):
             print("Markers vertically aligned")
             img_rot_deg = math.degrees(math.atan(col_diff / row_diff))
-            print("\nImage rotation: {}\n".format(img_rot_deg))
+            print("\nImage rotation: {} degrees\n".format(round(img_rot_deg,3)))
         elif (row_diff < col_diff) & (row_diff < 15):
             print("Markers horizontally aligned")
             img_rot_deg = math.degrees(math.atan(row_diff / col_diff))
-            print("\nImage rotation: {}\n".format(img_rot_deg))
+            print("\nImage rotation: {} degrees\n".format(round(img_rot_deg,3)))
         else:
             print("Markers unaligned; cannot compute rotation")
             img_rot_deg = np.nan
     else:
-        print("Wrong number of markers; cannot compute rotation")
+        print("Wrong number of markers ({}); cannot compute rotation".format(marker_ct))
         img_rot_deg = np.nan
     return img_rot_deg
 #*********************************************************************************************#
-def measure_shift(marker_dict, pass_num, spot_num):
+def _dict_matcher(_dict, spot_num, pass_num, mode = 'series'):
+    if mode == 'baseline': prev_pass = 1
+    elif mode == 'series': prev_pass = pass_num - 1
+    for key in _dict.keys():
+        split_key = key.split('.')
+        if (split_key[0] == str(spot_num)) &  (split_key[1] == str(prev_pass)):
+            prev_vals = _dict[key]
+        elif (split_key[0] == str(spot_num)) &  (split_key[1] == str(pass_num)):
+            new_vals = _dict[key]
+    return prev_vals, new_vals
+#*********************************************************************************************#
+def measure_shift(marker_dict, pass_num, spot_num, mode = 'baseline'):
     overlay_toggle = True
     if pass_num > 1:
-        prev_locs, new_locs = _dict_matcher(marker_dict, spot_num, pass_num, mode = 'series')
+        prev_locs, new_locs = _dict_matcher(marker_dict, spot_num, pass_num, mode = mode)
         plocs_ct = len(prev_locs)
         nlocs_ct = len(new_locs)
         if (plocs_ct > 0) & (nlocs_ct > 0) & (plocs_ct != nlocs_ct):
@@ -259,7 +273,7 @@ def measure_shift(marker_dict, pass_num, spot_num):
             overlay_toggle = False
         else:
             mean_shift = np.mean(shift_array, axis = 0)
-            print("Image shift: {}".format(mean_shift))
+            print("Image shift: {}\n".format(mean_shift))
             overlay_toggle = True
     else:
         mean_shift = np.array([0,0])
