@@ -150,9 +150,11 @@ def processed_image_viewer(image, particle_df, spot_coords, res, chip_name,
 
     if show_markers == True:
         for coords in markers:
-            mark = plt.Rectangle((coords[1]-58,coords[0]-78), 114, 154,
+            # mark_cm = plt.scatter(x = coords[1], y=coords[0],s=10, c = 'g',marker='+')
+            mark_box = plt.Rectangle((coords[1]-58,coords[0]-78), 114, 154,
                                   fill = False, ec = 'green', lw = 1)
-            axes.add_patch(mark)
+            # axes.add_patch(mark_cm)
+            axes.add_patch(mark_box)
     if crosshairs == True:
         plt.axhline(y = cy, color = 'red', linewidth = 3)
         plt.axvline(x = cx, color = 'red', linewidth = 3)
@@ -344,46 +346,32 @@ def generate_combo_hist(histogram_df, chip_name, pass_counter, cont_window, cmap
         print("File generated: " + fig_name)
         plt.clf()
 #*********************************************************************************************#
-def average_spot_data(spot_df, spot_tuple, pass_counter, chip_name):
+def average_spot_data(spot_df, spot_tuple, pass_counter):
     """Creates a dataframe containing the average data for each antibody spot type"""
     averaged_df = pd.DataFrame()
-    for spot in spot_tuple:
+    for i, spot in enumerate(spot_tuple):
+        sub_df = spot_df[spot_df.spot_type == spot_tuple[i]]
+        avg_time, avg_kpd, avg_nd, std_kpd, std_nd = [],[],[],[],[]
         for i in range(1,pass_counter+1):
-            time, density, norm_density = [],[],[]
-            for ix, row in spot_df.iterrows():
-                scan_num = row['scan_number']
-                spot_type = row['spot_type']
-                validity = row['valid']
-                if (scan_num == i) & (spot_type == spot) & (validity == True):
-                    time.append(row['scan_time'])
-                    density.append(row['kparticle_density'])
-                    norm_density.append(row['normalized_density'])
+            subsub_df = sub_df[sub_df.scan_number == i]
+            avg_time.append(
+                     round(
+                     np.nanmean(subsub_df.scan_time.iloc[subsub_df.scan_time.nonzero()]),2))
+            avg_kpd.append(round(np.nanmean(subsub_df.kparticle_density),2))
+            std_kpd.append(round(np.nanstd(subsub_df.kparticle_density),3))
+            avg_nd.append(round(np.nanmean(subsub_df.normalized_density),2))
+            std_nd.append(round(np.nanstd(subsub_df.normalized_density),3))
+        avg_df = pd.DataFrame({
+                              'scan_number': np.arange(1,pass_counter+1),
+                              'spot_type': [spot]* pass_counter,
+                              'avg_time': avg_time,
+                              'avg_density': avg_kpd,
+                              'std_density': std_kpd,
+                              'avg_norm_density':avg_nd,
+                              'std_norm_density':std_nd
+                              })
+        averaged_df = averaged_df.append(avg_df).reset_index(drop=True)
 
-                with warnings.catch_warnings():
-                    warnings.simplefilter("ignore", category=RuntimeWarning)
-                    avg_time = round(np.nanmean(time),2)
-                    avg_density = round(np.nanmean(density),2)
-                    std_density = round(np.nanstd(density),3)
-                    avg_norm_density = round(np.nanmean(norm_density),2)
-                    std_norm_density = round(np.nanstd(norm_density),3)
-            avg_df = pd.DataFrame([[spot,
-                                    i,
-                                    avg_time,
-                                    avg_density,
-                                    std_density,
-                                    avg_norm_density,
-                                    std_norm_density]],
-                                    columns=['spot_type',
-                                             'scan_number',
-                                             'avg_time',
-                                             'avg_density',
-                                             'std_density',
-                                             'avg_norm_density',
-                                             'std_norm_density']
-                                )
-            averaged_df = averaged_df.append(avg_df, ignore_index=True)
-            avg_spot_data = str('../virago_output/'+chip_name+'/'+chip_name+'_avg_spot_data.csv')
-            averaged_df.to_csv(avg_spot_data, sep = ',')
     return averaged_df
 #*********************************************************************************************#
 def dict_joy_trans(particle_dict, spot_counter):
@@ -448,16 +436,11 @@ def generate_timeseries(spot_df, averaged_df, mAb_dict, spot_tuple,
     """Generates a timeseries for the cumulate particle counts for each spot, and plots the average
     for each spot type"""
     baseline_toggle = input("Do you want the time series chart normalized to baseline? ([y]/n)\t")
-    cont_str = '{0}-{1}'.format(*cont_window)
     assert isinstance(baseline_toggle, str)
     if baseline_toggle.lower() in ('no', 'n'):
         filt_toggle = 'kparticle_density'
-        # avg_filt_toggle = 'avg_kparticle_density'
-        # stdev_filt_toggle = 'kparticle_density_std'
     else:
         filt_toggle = 'normalized_density'
-        # avg_filt_toggle = 'avg_normalized_density'
-        # stdev_filt_toggle = 'normalized_density_std'
         print("Normalizing...")
 
     sns.set(style="ticks")
@@ -465,36 +448,29 @@ def generate_timeseries(spot_df, averaged_df, mAb_dict, spot_tuple,
     ax1 = fig.add_subplot(111)
 
     for key in mAb_dict.keys():
-        if key == 1:
-            c = 0
-        elif (mAb_dict[key-1] != mAb_dict[key]):
-            c += 1
-            # else: break
-        print(key,c)
-        solo_spot_df = spot_df[(spot_df.spot_number == key) & (spot_df.valid == True)]
+        if key == 1: c = 0
+        elif (mAb_dict[key-1] != mAb_dict[key]): c += 1
+
+        solo_spot_df = spot_df[(spot_df.spot_number == key)
+                                & (spot_df.valid == 'True')].reset_index(drop = True)
         if not solo_spot_df.empty:
             if scan_or_time == 'scan':
-                x_axis = solo_spot_df['scan_number'].reset_index(drop = True)
+                x_axis = solo_spot_df['scan_number']
             elif scan_or_time == 'time':
-                x_axis = solo_spot_df['scan_time'].reset_index(drop = True)
-            density_y = solo_spot_df[filt_toggle].reset_index(drop = True)
-            ax1.plot(x_axis, density_y, linewidth = 1,
-                     color = vhf_colormap[c], alpha = 0.5, label = '_nolegend_')
+                x_axis = solo_spot_df['scan_time']
+            density_y = solo_spot_df[filt_toggle]
+            ax1.plot(x_axis, density_y, lw = 1, c = vhf_colormap[c], alpha = 0.5, label = '_nolegend_')
 
     ax2 = fig.add_subplot(111)
     for n, spot in enumerate(spot_tuple):
         avg_data = averaged_df[averaged_df['spot_type'] == spot]
-        print(spot)
-        if scan_or_time == 'scan':
-            avg_x = avg_data['scan_number']
-        else:
-            avg_x = avg_data['avg_time']
-        avg_density_y = avg_data['avg_norm_density']
-        errorbar_y = avg_data['std_norm_density']
-        ax2.errorbar(avg_x, avg_density_y,
-                        yerr = errorbar_y, label = spot_tuple[n],
-                        linewidth = 2, elinewidth = 1,
-                        color = vhf_colormap[n], aa = True)
+        if scan_or_time == 'scan': avg_x = avg_data['scan_number']
+        else: avg_x = avg_data['avg_time']
+
+        ax2.errorbar(avg_x, avg_data['avg_norm_density'],
+                        yerr = avg_data['std_norm_density'], label = spot_tuple[n],
+                        lw = 2, elinewidth = 1,
+                        c = vhf_colormap[n], aa = True)
 
     ax2.legend(loc = 'upper left', fontsize = 12, ncol = 1)
     if max(spot_df.scan_number) < 10: x_grid = 1
@@ -506,25 +482,25 @@ def generate_timeseries(spot_df, averaged_df, mAb_dict, spot_tuple,
     elif scan_or_time == 'time':
         plt.xlabel("Time (min)", size = 14)
         plt.xticks(np.arange(0, max(spot_df.scan_time) + 1, 5), size = 12)
-
-    plt.ylabel('Particle Density (kparticles/sq. mm)\n' + cont_str + '% Contrast', size = 12)
-
+    cont_str = '{0}-{1}'.format(*cont_window)
+    plt.ylabel("Particle Density (kparticles/sq. mm)\n {} % Contrast".format(cont_str), size = 12)
     plt.yticks(color = 'k', size = 12)
-    plt.title("{} Time Series of {}".format(chip_name, sample_name))
-
+    plt.title("{} Time Series of {}".format(chip_name, sample_name), size = 14)
     plt.axhline(linestyle = '--', color = 'gray')
 
-    plot_name = chip_name + '_timeseries_' + cont_str + '.png'
+    plot_name = "{}_timeseries_{}.png".format(chip_name, cont_str)
 
-    plt.savefig('../virago_output/' + chip_name + '/' +  plot_name,
+    plt.savefig('../virago_output/{}/{}'.format(chip_name, plot_name),
                 bbox_inches = 'tight', pad_inches = 0.1, dpi = 300)
-    print('File generated: ' + plot_name)
+    print('File generated: {}'.format(plot_name))
     plt.clf(); plt.close('all')
 #*********************************************************************************************#
 def generate_barplot(spot_df, pass_counter, cont_window, chip_name, sample_name):
-    """Generates a barplot for the dataset. Most useful for before and after scans (pass count == 2)"""
+    """
+    Generates a barplot for the dataset.
+    Most useful for before and after scans (pass_counter == 2)
+    """
     firstlast_spot_df = spot_df[(spot_df.scan_number == 1) | (spot_df.scan_number == pass_counter)]
-    # cont_str = str(cont_window[0]) + '-' + str(cont_window[1])
     cont_str = '{0}-{1}'.format(*cont_window)
     final_spot_df = firstlast_spot_df[firstlast_spot_df.scan_number == pass_counter]
 
@@ -537,7 +513,7 @@ def generate_barplot(spot_df, pass_counter, cont_window, chip_name, sample_name)
     ax1.set_xlabel("Prescan & Postscan", fontsize = 8)
 
     sns.barplot(y='normalized_density',x='spot_type',data=final_spot_df,
-                color='purple',errwidth = 2, ax=ax2)
+                color ='purple',errwidth = 2, ax=ax2)
     ax2.set_ylabel("")
     ax2.set_xlabel("Difference", fontsize = 8)
     for ax in fig.axes:
@@ -547,10 +523,10 @@ def generate_barplot(spot_df, pass_counter, cont_window, chip_name, sample_name)
     plt.suptitle(chip_name+" "+sample_name, y = 1.04, fontsize = 14)
 
     plt.tight_layout()
-    plot_name = chip_name + '_barplot_'+cont_str+'.png'
+    plot_name = "{}_barplot_{}.png".format(chip_name, cont_str)
 
-    plt.savefig('../virago_output/' + chip_name + '/' +  plot_name,
+    plt.savefig('../virago_output/{}/{}'.format(chip_name, plot_name),
                 bbox_inches = 'tight', pad_inches = 0.1, dpi = 300)
-    print('File generated: ' + plot_name)
+    print('File generated: {}'.format(plot_name))
     plt.clf(); plt.close('all')
 #*********************************************************************************************#
