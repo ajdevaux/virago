@@ -251,18 +251,18 @@ def measure_shift(marker_dict, pass_num, spot_num, mode = 'baseline'):
             shift_array = [np.subtract(coords1, coords0)
                            for coords0 in prev_locs
                            for coords1 in new_locs
-                           if np.all(abs(np.subtract(coords1, coords0)) <= 15)
+                           if np.all(abs(np.subtract(coords1, coords0)) <= 25)
                           ]
         elif (plocs_ct > 0) & (nlocs_ct > 0) & (plocs_ct == nlocs_ct):
             shift_array = [np.subtract(coords1, coords0)
                            for coords0 in prev_locs
                            for coords1 in new_locs
-                           if np.all(abs(np.subtract(coords1, coords0)) <= 35)
+                           if np.all(abs(np.subtract(coords1, coords0)) <= 50)
                            ]
         else:
             shift_array = []
-        shift_array = np.asarray(shift_array)
 
+        shift_array = np.asarray(shift_array)
         if (shift_array.size > 0) & (shift_array.ndim == 1):
             mean_shift = shift_array
             print("Image shift: {}".format(mean_shift))
@@ -276,13 +276,13 @@ def measure_shift(marker_dict, pass_num, spot_num, mode = 'baseline'):
             print("Image shift: {}\n".format(mean_shift))
             overlay_toggle = True
     else:
-        mean_shift = np.array([0,0])
+        mean_shift = tuple((0,0))
         overlay_toggle = False
 
-    return mean_shift, overlay_toggle
+    return tuple(mean_shift), overlay_toggle
 #*********************************************************************************************#
 def overlayer(overlay_dict, overlay_toggle, spot_num, pass_num,
-              mean_shift, overlay_dir, mode ='baseline'):
+              mean_shift, mode ='baseline'):
     vshift = int(np.ceil(mean_shift[0]))
     hshift = int(np.ceil(mean_shift[1]))
     if (pass_num > 1) & (overlay_toggle == True):
@@ -305,6 +305,7 @@ def overlayer(overlay_dict, overlay_toggle, spot_num, pass_num,
                 top_img = np.delete(top_img, np.s_[0:abs(hshift)], axis = 1)
 
             image_overlay = np.dstack((bot_img, top_img, np.zeros_like(bot_img)))
+            # image_overlay = top_img - bot_img
             return image_overlay
 
     elif pass_num == 1:

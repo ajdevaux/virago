@@ -73,19 +73,20 @@ def write_vdata(dir, filename, list_of_vals):
                          +'spot_type: {1}\n'
                          +'area_sqmm: {2}\n'
                          +'image_shift_RC: {3}\n'
-                         +'non-filo_ct: {4}\n'
-                         +'filo_ct: {5}\n'
-                         +'total_particles: {6}\n'
-                         +'slice_high_count: {7}\n'
-                         +'spot_coords_xyr: {8}\n'
-                         +'marker_coords_RC: {9}\n'
-                         +'binary_thresh: {10}\n'
-                         +'valid: {11}'
+                         +'overlay_mode: {4}\n'
+                         +'non-filo_ct: {5}\n'
+                         +'filo_ct: {6}\n'
+                         +'total_particles: {7}\n'
+                         +'slice_high_count: {8}\n'
+                         +'spot_coords_xyr: {9}\n'
+                         +'marker_coords_RC: {10}\n'
+                         +'binary_thresh: {11}\n'
+                         +'valid: {12}'
                          ).format(*list_of_vals)
                         )
 #*********************************************************************************************#
 def missing_pgm_fixer(spot_to_scan, pass_counter, pass_per_spot_list,
-                      chip_name, filo_toggle = False):
+                      chip_name, marker_dict, filo_toggle = False):
     print("Missing pgm files... fixing...")
     vcount_dir = '../virago_output/'+ chip_name + '/vcounts'
     scans_counted = [int(file.split(".")[-1]) for file in pass_per_spot_list]
@@ -94,9 +95,12 @@ def missing_pgm_fixer(spot_to_scan, pass_counter, pass_per_spot_list,
                          columns = ['y', 'x', 'r', 'z', 'pc', 'sdm'])
 
     missing_csvs = scan_set.difference(scans_counted)
+
     for scan in missing_csvs:
         scan_str = str(scan)
         spot_str = str(spot_to_scan)
+        spot_scan_str  = '{}.{}'.format(spot_str, scan_str)
+        marker_dict[spot_scan_str] = (0,0)
         missing_scan = chip_name + '.' + '0' * (3 - len(spot_str)) + spot_str + '.' + '0' * (3 - len(scan_str)) + scan_str
         missing_df.to_csv(vcount_dir + '/' + missing_scan + '.vcount.csv')
         if filo_toggle == True:
@@ -106,10 +110,12 @@ def missing_pgm_fixer(spot_to_scan, pass_counter, pass_per_spot_list,
                                                       'pc', 'vertex1', 'vertex2',
                                                       'area', 'bbox_verts'])
             missing_filo_df.to_csv(filo_dir + '/' + missing_scan + '.filocount.csv')
-        missing_vals = list([missing_scan, 'N/A', 0, 'N/A', 'N/A',
+        missing_vals = list([missing_scan, 'N/A', 0, 'N/A', 'N/A', 'N/A',
                             'N/A', 0, 'N/A', 'N/A', 'N/A', 'N/A', False])
         write_vdata(vcount_dir, missing_scan, missing_vals)
         print("Writing blank data files for {}".format(missing_scan))
+
+
 #*********************************************************************************************#
 def mirror_finder(pgm_list):
     mirror_file = str(glob.glob('*000.pgm')).strip("'[]'")

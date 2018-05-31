@@ -301,8 +301,20 @@ def generate_combo_hist(histogram_df, chip_name, pass_counter, cont_window, cmap
     """Generates a histogram figure for each pass in the IRIS experiment from a DataFrame representing the average data for every spot type"""
     histo_dir = ('../virago_output/'+chip_name+'/histograms')
     cont_str = '{0}-{1}'.format(*cont_window)
-    y_min = int(np.floor(np.min(np.min(histogram_df.drop('bins', axis = 1))) - 1))
-    y_max = int(np.ceil(np.max(np.max(histogram_df.drop('bins', axis = 1))) + 1))
+
+    histo_min = int(np.min(np.min(histogram_df.drop('bins', axis = 1))))
+    histo_max = int(np.max(np.max(histogram_df.drop('bins', axis = 1))))
+    y_minmod = histo_min % 5
+    y_maxmod = histo_max % 5
+    if y_minmod == 0: y_min = histo_min - 5
+    else: y_min = histo_min - y_minmod
+    if y_maxmod == 0: y_max = histo_max + 5
+    else: y_max = histo_max + y_maxmod
+    if abs(y_max - y_min) < 10:
+        y_grid = 1
+    else:
+        y_grid = int(np.ceil(abs((y_max - y_min) // 10)/5) * 5)
+    # print(y_min,y_max,y_grid)
     if pass_counter < 10: passes_to_show = 1
     else: passes_to_show = pass_counter // 10
     for i in range(1, pass_counter+1, passes_to_show):
@@ -315,8 +327,6 @@ def generate_combo_hist(histogram_df, chip_name, pass_counter, cont_window, cmap
                 if pass_num == i:
                     peak = histogram_df.bins[histogram_df[col] == np.max(histogram_df[col])]
                     peak = float(peak.iloc[0])
-                # if (c == 1): alpha_val = 0
-                # else:
                 alpha_val = 0.75
                 if pass_num == i:
                     plt.step(x = histogram_df.bins,
@@ -326,15 +336,13 @@ def generate_combo_hist(histogram_df, chip_name, pass_counter, cont_window, cmap
                              alpha = alpha_val,
                              label = spot_type)
                     plt.axvline(x=peak, color = cmap[c], alpha=0.75, linewidth = 0.5)
-                    # sns.kdeplot(data = histogram_df[col])
                     c += 1
         plt.title(chip_name+" Pass "+str(i)+" Average Histograms - Baseline Subtracted")
         plt.axhline(y=0, ls='dotted', c='black', alpha=0.75)
         plt.legend(loc = 'best', fontsize = 14)
         plt.ylabel("Particle Count", size = 14)
-        if abs(y_max - y_min) < 10: y_grid = 1
-        else: y_grid = abs((y_max - y_min) // 10)
-        plt.yticks(range(y_min,y_max+1,y_grid), size = 12)
+
+        plt.yticks(range(y_min,y_max+5,y_grid), size = 12)
         plt.xlabel("Percent Contrast", size = 14)
         if (len(histogram_df.bins) >= 100) & (len(histogram_df.bins) < 200): x_grid = 10
         elif len(histogram_df.bins) >= 200: x_grid = 20
@@ -393,6 +401,8 @@ def generate_joyplot(joy_df, spot_counter, cont_window, chip_name, savedir):
     scans = sorted(list(set(joy_df.scan_ID)), reverse = True)
     histo_dir = ('../virago_output/'+chip_name+'/histograms')
     num_graphs = len(scans)
+    if num_graphs > 10:
+        scans_to_show = range(1,num_graphs, num_graphs//10)
     max_contrast = int(cont_window[1])
     sns.set(style=("white"), rc={"axes.facecolor": (0, 0, 0, 0)})
     pal = sns.cubehelix_palette(num_graphs, rot=-.25, light=.7)
@@ -477,11 +487,11 @@ def generate_timeseries(spot_df, averaged_df, mAb_dict, spot_tuple,
     else: x_grid = max(spot_df.scan_number) // 10
     if scan_or_time == 'scan':
         plt.xlabel("Scan Number", size = 14)
-        plt.xticks(np.arange(1, max(spot_df.scan_number) + 1, x_grid), size = 12)
+        plt.xticks(np.arange(1, max(spot_df.scan_number) + 1, x_grid), size = 12, rotation = 30)
 
     elif scan_or_time == 'time':
         plt.xlabel("Time (min)", size = 14)
-        plt.xticks(np.arange(0, max(spot_df.scan_time) + 1, 5), size = 12)
+        plt.xticks(np.arange(0, max(spot_df.scan_time) + 1, 5), size = 12, rotation = 30)
     cont_str = '{0}-{1}'.format(*cont_window)
     plt.ylabel("Particle Density (kparticles/sq. mm)\n {} % Contrast".format(cont_str), size = 12)
     plt.yticks(color = 'k', size = 12)
