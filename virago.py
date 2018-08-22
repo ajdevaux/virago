@@ -4,14 +4,20 @@ from future.builtins import input
 from datetime import datetime
 import pandas as pd
 import numpy as np
+import matplotlib.pyplot as plt
+import seaborn as sns
 from skimage import io as skio
+from scipy import ndimage as ndi
 import glob, os, math
 from modules import vpipes, vimage, vquant, vgraph
+from modules import filoquant as filo
 from images import logo
 
 pd.set_option('display.width', 1000)
 pd.options.display.max_rows = 999
 logo.print_logo()
+version = '1.0.1'
+print("VERSION {}".format(version))
 #*********************************************************************************************#
 #
 #    CODE BEGINS HERE
@@ -25,7 +31,7 @@ marker_dict = {}
 while (pgm_list == []) and (zip_list == []): ##Keep repeating until pgm files are found
     iris_path = input("\nPlease type in the path to the folder that contains the IRIS data:\n")
     if iris_path == 'test':
-        iris_path = '/Volumes/KatahdinHD/ResilioSync/DATA/IRIS/tCHIP_results/tCHIP008_VSV-EBOVmay@1E6'
+        iris_path = '/Volumes/KatahdinHD/ResilioSync/DATA/IRIS/tCHIP_results/tCHIP004_EBOVmay@1E6'
     else:
         iris_path = iris_path.strip('"')##Point to the correct directory
     os.chdir(iris_path)
@@ -161,7 +167,8 @@ if pgm_toggle.lower() not in ('no', 'n'):
 
         if (passes_per_spot != pass_counter) and (finish_anal.lower() not in ('yes', 'y')):
             vpipes.missing_pgm_fixer(spot_to_scan, pass_counter, pps_list,
-                                                    chip_name,  marker_dict, filo_toggle)
+                                     chip_name,  marker_dict, filo_toggle
+            )
             # for scan in missing_scans:
             #     spot_pass_missing = '{}.{}'.format(spot_to_scan, scan)
             #     marker_dict[spot_pass_missing] = (0,0)
@@ -242,7 +249,7 @@ if pgm_toggle.lower() not in ('no', 'n'):
             shift_dict[spot_pass_str] = mean_shift
 
             overlay_dict[spot_pass_str] = pic_maxmin
-            if overlay_toggle == True:
+            if (overlay_toggle == True) & (finish_anal not in ('yes', 'y')):
                 img_overlay = vimage.overlayer(overlay_dict, overlay_toggle, spot_num, pass_num,
                                                 mean_shift, mode = overlay_mode)
                 if img_overlay is not None:
@@ -251,6 +258,8 @@ if pgm_toggle.lower() not in ('no', 'n'):
                                    name = overlay_name,
                                    savedir = overlay_dir,
                                    show = False)
+            else:
+                print("Cannot overlay images.")
 
             if spot_num in circle_dict:
                 xyr = circle_dict[spot_num]
@@ -495,48 +504,59 @@ if pgm_toggle.lower() not in ('no', 'n'):
             if filo_toggle is True:
 
                 print("\nAnalyzing filaments...")
-                filo_pic = np.ma.array(pic_maxmin, mask = full_mask)
+                filo_pic = np.ma.array(ndi.gaussian_filter(pic3D_rescale[mid_pic], sigma=1),
+                                       mask = full_mask
+                )
                 masked_pic_orig = np.ma.array(pic3D_orig[mid_pic], mask = full_mask)
 
-                pic_binary, binary_props, bin_thresh = ebc.fira_binarize(filo_pic,
+                pic_binary, binary_props, bin_thresh = filo.filobinarize(filo_pic,
                                                                          masked_pic_orig,
-                                                                         thresh_scalar = 0.01,
-                                                                         show_hist = True)
+                                                                         thresh_scalar = 0.25,
+                                                                         show_hist = False
+                )
                 print("\nBinary threshold = %.3f \n" % bin_thresh)
-
+                # vimage.gen_img(pic_binary)
                 # pic_binary = morphology.binary_closing(pic_binary, selem = bin_selem)
-                binary_df, bbox_list = ebc.fira_binary_quant(binary_props,
+                binary_df, bbox_list = filo.filobinary_quant(binary_props,
                                                   pic3D_orig[mid_pic],
                                                   res = pix_per_micron,
-                                                  area_filter = (4,200))
+                                                  area_filter = (4,200)
+                )
                 binary_df = binary_df[binary_df.roundness < 1]
                 binary_df.reset_index(drop = True, inplace = True)
                 if not binary_df.empty:
-                    pic_skel, skel_props = ebc.fira_skel(pic_binary, masked_pic_orig)
-                    skel_df = ebc.fira_skel_quant(skel_props,
+                    pic_skel, skel_props = filo.filoskel(pic_binary, masked_pic_orig)
+                    # vimage.gen_img(pic_skel)
+                    skel_df = filo.filoskel_quant(skel_props,
                                                   res = pix_per_micron,
-                                                  area_filter = (3,100))
+                                                  area_filter = (3,100)
+                    )
 
-                    binskel_df = ebc.fira_boxcheck_merge(skel_df, binary_df,
+                    binskel_df = filo.boxcheck_merge(skel_df, binary_df,
                                              pointcol = 'centroid_skel',
-                                             boxcol = 'bbox_verts')
+                                             boxcol = 'bbox_verts'
+                    )
                     if not binskel_df.empty:
                         binskel_df.sort_values('area', kind = 'quicksort', inplace = True)
                         binskel_df.drop_duplicates(subset = 'label_skel', keep = 'last',
-                                                   inplace = True)
+                                                   inplace = True
+                        )
                         binskel_df.reset_index(drop = True, inplace = True)
 
-                        filo_df = ebc.fira_boxcheck_merge(particle_df, binskel_df,
+                        filo_df = filo.boxcheck_merge(particle_df, binskel_df,
                                                     pointcol = 'coords_yx',
                                                     boxcol = 'bbox_verts',
-                                                    dropcols = True)
+                                                    dropcols = True
+                        )
                         if not filo_df.empty:
                             filo_df.sort_values('filo_pc',
                                                      kind = 'quicksort',
-                                                     inplace = True)
+                                                     inplace = True
+                            )
                             filo_df.drop_duplicates(subset = 'label_skel',
                                                         keep = 'last',
-                                                        inplace = True)
+                                                        inplace = True
+                            )
 
                             filo_df.reset_index(drop = True, inplace = True)
 
@@ -550,8 +570,10 @@ if pgm_toggle.lower() not in ('no', 'n'):
                                                            'vertex1',
                                                            'vertex2',
                                                            'area',
-                                                           'bbox_verts'])
+                                                           'bbox_verts']
+                            )
                             filo_ct = len(filo_df)
+
                             sns.set_style('darkgrid')
                             filo_histo = sns.distplot(filo_df.filament_length_um, bins = 33,
                                                       norm_hist = False, kde = False,
@@ -566,9 +588,9 @@ if pgm_toggle.lower() not in ('no', 'n'):
                                        bbox_inches = 'tight', pad_inches = 0.1, dpi = 300)
                             plt.close('all')
 
-                        else: filo_df = ebc.no_filos(filo_dir, img_name)
-                    else: filo_df = ebc.no_filos(filo_dir, img_name)
-                else: filo_df = ebc.no_filos(filo_dir, img_name)
+                        else: filo_df = filo.no_filos(filo_dir, img_name)
+                    else: filo_df = filo.no_filos(filo_dir, img_name)
+                else: filo_df = filo.no_filos(filo_dir, img_name)
             else: filo_df = pd.DataFrame([]); bin_thresh = 0
 
 
@@ -607,9 +629,9 @@ if pgm_toggle.lower() not in ('no', 'n'):
                                            res = pix_per_micron,
                                            filo_df = filo_df,
                                            markers = marker_locs,
-                                           show_particles = True,
-                                           show_markers = True,
-                                           show_filaments = False,
+                                           show_particles = False,
+                                           show_markers = False,
+                                           show_filaments = filo_toggle,
                                            show_info = False,
                                            chip_name = chip_name,
                                            im_name = img_name,
@@ -704,21 +726,7 @@ if len(vcount_csv_list) >= total_pgms:
 elif len(vcount_csv_list) != total_pgms:
     pgms_remaining = total_pgms - len(vcount_csv_list)
 
-def spot_remover(spot_df, particle_dict):
-    excise_toggle = input("Would you like to remove any spots from the analysis? (y/[n])\t")
-    assert isinstance(excise_toggle, str)
-    if excise_toggle.lower() in ('y','yes'):
-        excise_spots = input("Which spots? (Separate all spot numbers by a comma)\t")
-        excise_spots = excise_spots.split(",")
-        for ex_spot in excise_spots:
-            spot_df.loc[spot_df.spot_number == int(ex_spot), 'valid'] = False
-            for key in particle_dict.keys():
-                spot_num = int(key.split(".")[0])
-                if spot_num == ex_spot:
-                    particle_dict[key] = 0
-    return spot_df, particle_dict
-
-spot_df, particle_dict = spot_remover(spot_df, particle_dict)
+spot_df, particle_dict = vquant.spot_remover(spot_df, particle_dict)
 
 vhf_colormap = ('#e41a1c','#377eb8','#4daf4a',
             '#984ea3','#ff7f00','#ffff33',
@@ -740,13 +748,16 @@ new_cm = [
          ]
 if float(cont_window[0]) == 0:
 
-    histogram_df = vgraph.histogrammer(particle_dict, spot_counter, cont_window, baselined = True)
+    norm = False
+
+    histogram_df = vgraph.histogrammer(particle_dict, spot_counter, cont_window, baselined = norm)
     histogram_df.to_csv(histo_dir + '/' + chip_name + '_histogram_data.csv')
 
-    mean_histogram_df = vgraph.histogram_averager(histogram_df, mAb_dict_rev, pass_counter)
-    mean_histogram_df.to_csv(histo_dir + '/' + chip_name + '_mean_histogram_data.csv')
+    mean_histo_df = vgraph.histogram_averager(histogram_df, mAb_dict_rev, pass_counter, smooth = True)
+    mean_histo_df.to_csv(histo_dir + '/' + chip_name + '_mean_histogram_data.csv')
 
-    vgraph.generate_combo_hist(mean_histogram_df, chip_name, pass_counter, cont_window, cmap = vhf_colormap)
+    vgraph.generate_combo_hist(mean_histo_df, chip_name, pass_counter, cont_window,
+                                cmap = vhf_colormap, baselined = norm, savedir=histo_dir)
 
     for spot in range(1,spot_counter+1):
         joyplot_df = vgraph.dict_joy_trans(particle_dict, spot)
@@ -764,10 +775,13 @@ averaged_df = vgraph.average_spot_data(spot_df, spot_tuple, pass_counter)
 
 if pass_counter > 2:
     vgraph.generate_timeseries(spot_df, averaged_df, mAb_dict, spot_tuple,
-                        chip_name, sample_name, vhf_colormap, cont_window,
-                        scan_or_time = timeseries_mode)
+                               chip_name, sample_name, vhf_colormap, cont_window, version=version,
+                               scan_or_time = timeseries_mode, baseline = True, savedir=virago_dir
+)
 elif pass_counter <= 2:
-    vgraph.generate_barplot(spot_df, pass_counter, cont_window, chip_name, sample_name)
+    vgraph.generate_barplot(spot_df, pass_counter, cont_window,
+                            chip_name, sample_name, savedir=virago_dir
+)
 
 spot_df.to_csv(virago_dir + '/' + chip_name + '.spot_data.csv')
 print('File generated: '+ chip_name + '_spot_data.csv')
