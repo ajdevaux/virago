@@ -1,10 +1,13 @@
 #! /usr/local/bin/python3
 from __future__ import division
 import matplotlib.pyplot as plt
-import pandas as pd
+# import pandas as pd
 import numpy as np
+from scipy.ndimage import zoom
 from scipy.stats import norm, gamma
-from skimage import exposure, feature, transform, filters, util, measure, morphology, io
+from skimage.exposure import cumulative_distribution, equalize_adapthist, rescale_intensity
+from skimage.feature import match_template, peak_local_max, canny
+from skimage.transform import hough_circle, hough_circle_peaks
 import math, warnings
 # from vpipes import _dict_matcher
 #*********************************************************************************************#
@@ -27,9 +30,9 @@ def image_details(fig1, fig2, fig3, pic_edge, chip_name, png, save = False, dpi 
 
     ax_img.imshow(fig3, cmap = 'gray')
 
-    pic_cdf1, cbins1 = exposure.cumulative_distribution(fig1, bin_no)
-    pic_cdf2, cbins2 = exposure.cumulative_distribution(fig2, bin_no)
-    pic_cdf3, cbins3 = exposure.cumulative_distribution(fig3, bin_no)
+    pic_cdf1, cbins1 = cumulative_distribution(fig1, bin_no)
+    pic_cdf2, cbins2 = cumulative_distribution(fig2, bin_no)
+    pic_cdf3, cbins3 = cumulative_distribution(fig3, bin_no)
 
     ax_hist1 = plt.axes([.05, .05, .25, .25])
     ax_cdf1 = ax_hist1.twinx()
@@ -80,8 +83,8 @@ def image_details(fig1, fig2, fig3, pic_edge, chip_name, png, save = False, dpi 
     plt.close('all')
     return hbins2, pic_cdf1
 #*********************************************************************************************#
-def gen_img(image, name = 'default', savedir = '', cmap = 'gray', dpi = 96, show = True):
-    print(savedir)
+def gen_img(image, name = 'default', savedir = '', cmap = 'gray', dpi = 96, show = True, zoom_amt = 1):
+    print(zoom_amt)
     nrows, ncols = image.shape[0], image.shape[1]
     figsize = ((ncols/dpi), (nrows/dpi))
     fig = plt.figure(figsize = figsize, dpi = dpi)
@@ -89,9 +92,11 @@ def gen_img(image, name = 'default', savedir = '', cmap = 'gray', dpi = 96, show
     fig.add_axes(axes)
     axes.set_axis_off()
     axes.imshow(image, cmap = cmap)
+    # if zoom_amt > 1:
+    #     image = zoom(image, zoom_amt)
     if savedir:
-        plt.savefig(savedir + "/" + name + '.png', dpi = dpi)
-        print("\nFile generated: {}\n".format(name))
+        plt.savefig('{}/{}.png'.format(savedir, name), dpi = dpi)
+        print("\nFile generated: {}.png\n".format(name))
     if show == True: plt.show()
     plt.close('all')
 #*********************************************************************************************#
@@ -114,12 +119,14 @@ def gen_img3D(im3D, cmap = "gray", step = 1):
 #*********************************************************************************************#
 def marker_finder(image, marker, thresh = 0.9, gen_mask = False):
     """This locates the "backwards-L" shapes in the IRIS images"""
-    marker_match = feature.match_template(image, marker, pad_input = True)
+    marker_match = match_template(image, marker, pad_input = True)
     # gen_img(marker_match, show=True)
-    locs = feature.peak_local_max(marker_match,
-                                  min_distance = 100,
+    locs = peak_local_max(marker_match,
+                                  min_distance = 800,
                                   threshold_rel = thresh,
-                                  exclude_border = False)
+                                  exclude_border = False,
+                                  num_peaks = 4
+    )
     locs = [tuple(coords) for coords in locs]
     locs.sort(key = lambda coord: coord[1])
 
@@ -133,22 +140,23 @@ def marker_finder(image, marker, thresh = 0.9, gen_mask = False):
             marker_h = (np.arange(coords[0] - h/2,coords[0] + h/2)).astype(int)
             mask[marker_h[0]:marker_h[-1],marker_w[0]:marker_w[-1]] = True
 
-    return locs, mask
+        return locs, mask
+    else:
+        return locs
 #*********************************************************************************************#
 def spot_finder(image, canny_sig = 2, rad_range = (525, 651), center_mode = False):
     """Locates the antibody spot convalently bound to the SiO2 substrate
     where particles of interest should be accumulating"""
     nrows, ncols = image.shape
-    pic_canny = feature.canny(image, sigma = canny_sig)
+    pic_canny = canny(image, sigma = canny_sig)
     if center_mode == True:
         xyr = (536, 540, 500)
     else:
         hough_radius = range(rad_range[0], rad_range[1], 25)
-        hough_res = transform.hough_circle(pic_canny, hough_radius)
-        accums, cx, cy, rad = transform.hough_circle_peaks(hough_res, hough_radius,
-                                                       total_num_peaks=1)
+        hough_res = hough_circle(pic_canny, hough_radius)
+        accums, cx, cy, rad = hough_circle_peaks(hough_res, hough_radius, total_num_peaks=1)
         xyr = tuple((int(cx), int(cy), int(rad)))
-    print("Spot center coordinates (row, column, radius): {}".format(xyr))
+    print("Spot center coordinates (row, column, radius): {}\n".format(xyr))
     return xyr, pic_canny
 #*********************************************************************************************#
 def clahe_3D(img_stack, cliplim = 0.003, recs = 0):
@@ -162,7 +170,7 @@ def clahe_3D(img_stack, cliplim = 0.003, recs = 0):
         warnings.simplefilter("ignore")
         warnings.warn(UserWarning)##Images are acutally converted to uint16 for some reason
         for plane,image in enumerate(img_stack):
-            img3D_clahe[plane] = exposure.equalize_adapthist(image, clip_limit = cliplim)
+            img3D_clahe[plane] = equalize_adapthist(image, clip_limit = cliplim)
             image_r = img3D_clahe[plane].ravel()
                 # hist1, hbins1 = np.histogram(image_r, bins = 55)
                 # mean, std = norm.fit(image_r)
@@ -185,15 +193,17 @@ def rescale_3D(img_stack, perc_range = (2,98)):
     img3D_rescale = np.empty_like(img_stack)
     for plane, image in enumerate(img_stack):
         p1,p2 = np.percentile(image, perc_range)
-        img3D_rescale[plane] = exposure.rescale_intensity(image, in_range=(p1,p2))
+        img3D_rescale[plane] = rescale_intensity(image, in_range=(p1,p2))
     return img3D_rescale
 #*********************************************************************************************#
 def masker_3D(image_stack, mask, filled = False, fill_val = 0):
     """Masks all images in stack so only areas not masked (the spot) are quantified.
     Setting filled = True will return a normal array with fill_val filled in on the masked areas.
     Default filled = False returns a numpy masked array."""
+
     pic3D_masked = np.ma.empty_like(image_stack)
     pic3D_filled = np.empty_like(image_stack)
+
     for plane, image in enumerate(image_stack):
         pic3D_masked[plane] = np.ma.array(image, mask = mask)
         if filled == True:
@@ -251,13 +261,13 @@ def measure_shift(marker_dict, pass_num, spot_num, mode = 'baseline'):
             shift_array = [np.subtract(coords1, coords0)
                            for coords0 in prev_locs
                            for coords1 in new_locs
-                           if np.all(abs(np.subtract(coords1, coords0)) <= 25)
+                           if np.all(abs(np.subtract(coords1, coords0)) <= 50)
                           ]
         elif (plocs_ct > 0) & (nlocs_ct > 0) & (plocs_ct == nlocs_ct):
             shift_array = [np.subtract(coords1, coords0)
                            for coords0 in prev_locs
                            for coords1 in new_locs
-                           if np.all(abs(np.subtract(coords1, coords0)) <= 50)
+                           if np.all(abs(np.subtract(coords1, coords0)) <= 75)
                            ]
         else:
             shift_array = []
@@ -312,4 +322,34 @@ def overlayer(overlay_dict, overlay_toggle, spot_num, pass_num,
         print("First scan of spot...")
     else:
         print("Cannot overlay images")
+#*********************************************************************************************#
+def cropper(pic, coords, img_dir, crop_pix = 150, zoom_amt = 1):
+    crop_dict = {}
+    cx = int(coords[0])
+    cy = int(coords[1])
+    rad = int(coords[2])
+    for i in range(-300,301,150):
+
+        sx = cx + i
+        sy = cy + i
+
+        print(i)
+        print(sx, cy)
+        print(cx, sy)
+        if not (sx,cy) == (cx,sy):
+            gen_img(pic[cy-crop_pix: cy+crop_pix, sx-crop_pix: sx+crop_pix],
+                            name = "{}.{}-{}".format(img_name,cy,sx),
+                            savedir = img_dir,
+                            # zoom_amt = zoom_amt
+
+            )
+            gen_img(pic[sy-crop_pix: sy+crop_pix, cx-crop_pix: cx+crop_pix],
+                            name = "{}.{}-{}".format(img_name,sy,cx),
+                            savedir = img_dir,
+            )
+        else:
+            gen_img(pic[cy-crop_pix: cy+crop_pix, cx-crop_pix: cx+crop_pix],
+                            name = "{}.{}-{}".format(img_name,cy,cx),
+                            savedir = img_dir
+            )
 #*********************************************************************************************#

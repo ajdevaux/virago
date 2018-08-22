@@ -11,6 +11,11 @@ import os, json, math, warnings, sys, glob, zipfile
 #           SUBROUTINES
 #
 #*********************************************************************************************#
+def three_digs(number):
+    if not type(number) is str:
+        number = str(number)
+
+    return '0'*(3 - len(number)) + number
 #*********************************************************************************************#
 def chip_file_reader(xml_file):
     """XML file reader, reads the chip file used during the IRIS experiment"""
@@ -33,10 +38,10 @@ def dejargonifier(chip_file):
     """This takes antibody names from the chip file and makes them more general for easier layperson understanding.
     It returns two dictionaries that match spot number with antibody name."""
     jargon_dict = {
-                   '13F6': 'anti-EBOVmay', '127-8': 'anti-MARV', 'AGP127-8':'anti-MARV',
-                   '6D8': 'anti-EBOVmak', '8.9F': 'anti-LASV',
-                   '8G5': 'anti-VSV', '4F3': 'anti-panEBOV',
-                   '13C6': 'anti-panEBOV'
+                   '13F6': r'$\alpha$'+'-EBOV', '127-8': r'$\alpha$'+'-MARV', 'AGP127-8':r'$\alpha$'+'-MARV',
+                   '6D8': r'$\alpha$'+'-EBOV', '8.9F': r'$\alpha$'+'-LASV',
+                   '8G5': r'$\alpha$'+'-VSV', '4F3': r'$\alpha$'+'-EBOV',
+                   '13C6': r'$\alpha$'+'-EBOV'
                    }
     mAb_dict = {}
     for q, spot in enumerate(chip_file):
@@ -84,11 +89,15 @@ def write_vdata(dir, filename, list_of_vals):
                          +'valid: {12}'
                          ).format(*list_of_vals)
                         )
+        # write_list =[]
+        # for val in list_of_vals:
+        #     write_list.append(str(val)+': '+val+'\n')
+
 #*********************************************************************************************#
 def missing_pgm_fixer(spot_to_scan, pass_counter, pass_per_spot_list,
-                      chip_name, marker_dict, filo_toggle = False):
+                      chip_name, marker_dict, filo_toggle = False, version = 1):
     print("Missing pgm files... fixing...")
-    vcount_dir = '../virago_output/'+ chip_name + '/vcounts'
+    vcount_dir = '../virago_output/{}/vcounts'.format(chip_name)
     scans_counted = [int(file.split(".")[-1]) for file in pass_per_spot_list]
     scan_set = set(range(1,pass_counter+1))
     missing_df = pd.DataFrame(np.zeros(shape = (1,6)),
@@ -101,18 +110,21 @@ def missing_pgm_fixer(spot_to_scan, pass_counter, pass_per_spot_list,
         spot_str = str(spot_to_scan)
         spot_scan_str  = '{}.{}'.format(spot_str, scan_str)
         marker_dict[spot_scan_str] = (0,0)
-        missing_scan = chip_name + '.' + '0' * (3 - len(spot_str)) + spot_str + '.' + '0' * (3 - len(scan_str)) + scan_str
-        missing_df.to_csv(vcount_dir + '/' + missing_scan + '.vcount.csv')
+        scan_data = [chip_name, vpipes.three_digs(spot_to_scan), vpipes.three_digs(scan)]
+        missing_scan = "{0}.{1}.{2}".format(*scan_data)#chip_name + '.' + '0' * (3 - len(spot_str)) + spot_str + '.' + '0' * (3 - len(scan_str)) + scan_str
+        print(missing_scan)
+        missing_df.to_csv('{}/{}.vcount.csv'.format(vcount_dir, missing_scan))
         if filo_toggle == True:
             filo_dir = '../virago_output/'+ chip_name + '/filo'
             missing_filo_df = pd.DataFrame(columns = ['centroid_bin', 'label_skel',
                                                       'filament_length_um', 'roundness',
                                                       'pc', 'vertex1', 'vertex2',
                                                       'area', 'bbox_verts'])
-            missing_filo_df.to_csv(filo_dir + '/' + missing_scan + '.filocount.csv')
+            missing_filo_df.to_csv('{}/{}.filocount.csv'.format(filo_dir,missing_scan))
         missing_vals = list([missing_scan, 'N/A', 0, 'N/A', 'N/A', 'N/A',
                             'N/A', 0, 'N/A', 'N/A', 'N/A', 'N/A', False])
         write_vdata(vcount_dir, missing_scan, missing_vals)
+
         print("Writing blank data files for {}".format(missing_scan))
 
 
@@ -164,3 +176,36 @@ def zipper(filename, filelist, dir = os.getcwd(), compression = 'bz2'):
     for file in filelist:
         zf.write(file,compress_type=zMODE)
         print("{} added to {}.{}".format(file, filename, compression))
+#*********************************************************************************************#
+def bad_data_writer(spot_to_scan, scan, vcount_dir):
+    spot_scan_str = '{}.{}'.format(spot_to_scan, scan)
+    marker_dict[spot_scan_str] = (0,0)
+
+    scan_data = [chip_name, vpipes.three_digs(spot_to_scan), vpipes.three_digs(scan)]
+
+    bad_scan = '{0}.{1}.{2}'.format(*scan_data)
+    shape_df_cols = [ 'label_bin',	'coords',	'centroid_bin',	'area',
+                      'roundness',	'bbox_verts',  'greatest_max', 'max_z','median_bg'
+                      'perc_intensity',	'perim_area_ratio','filo_points',
+                      'round_points',	'median_bg','cv_bg','perc_contrast', 'filo_score'
+    ]
+    blank_df = pd.DataFrame(np.zeros(shape = (1,len(shape_df_cols))), columns = [shape_df_cols])
+
+    blank_df.to_csv('{}/{}.vcount.csv'.format(vcount_dir, bad_scan))
+
+    missing_vdata_dict= {'image_name'      : bad_scan,
+                         'spot_type'       : 'N/A',
+                         'area_sqmm'       : 0,
+                         'image_shift_RC'  : 'N/A',
+                         'overlay_mode'    : 'N/A',
+                         'particle_count'  : 0,
+                         'filo_count'      : 0,
+                         'spot_coords_xyr' : 'N/A',
+                         'marker_coords_RC': 'N/A',
+                         'valid'           : False,
+                         'VIRAGO_version'  : version
+    }
+    with open('{}/{}.vdata.txt'.format(vcount_dir,bad_scan),'w') as f:
+        for k,v in missing_vdata_dict.items():
+            f.write('{}: {}\n'.format(k,v))
+    print("Writing blank data files for {}".format(bad_scan))

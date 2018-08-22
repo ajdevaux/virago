@@ -2,6 +2,7 @@ from future.builtins import input
 import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
+import matplotlib.lines as lines
 import seaborn as sns
 import warnings
 #*********************************************************************************************#
@@ -233,6 +234,85 @@ def image_details(fig1, fig2, fig3, pic_edge, chip_name, png, save = False, dpi 
     plt.close('all')
     return hbins2, pic_cdf1
 #*********************************************************************************************#
+def gen_particle_image(pic_to_show, shape_df, spot_coords, pix_per_um, cv_cutoff,
+                       show_particles=True, scalebar = 0, markers = []):
+    nrows, ncols = pic_to_show.shape
+    cx,cy,rad = spot_coords
+    true_radius = round((rad - 20) / pix_per_um,2)
+    dpi = 96
+    fig = plt.figure(figsize = (ncols/dpi, nrows/dpi), dpi = dpi)
+    axes = plt.Axes(fig,[0,0,1,1])
+    fig.add_axes(axes)
+    axes.set_axis_off()
+
+    axes.imshow(pic_to_show, cmap = plt.cm.gray)
+
+    ab_spot = plt.Circle((cx, cy), rad, color='#5A81BB',
+                         linewidth=5, fill=False, alpha = 0.5
+    )
+    axes.add_patch(ab_spot)
+    if markers != []:
+        for coords in markers:
+            mark_box = plt.Rectangle((coords[1]-58,coords[0]-78), 114, 154,
+                                      fill = False, ec = 'green', lw = 1)
+            axes.add_patch(mark_box)
+    if show_particles == True:
+        patch_settings = dict(fill=False, linewidth=1)
+        line_settings = dict(lw=1,color='purple',alpha=0.6)
+
+        total_passes = np.max(shape_df.pass_number)
+
+        for val in shape_df.index.values:
+            filo_score = shape_df.filo_score.loc[val]
+            pass_num = shape_df.pass_number.loc[val]
+
+
+
+            if (pass_num == total_passes):
+                color = 'c'
+                alpha = 0.75
+            else:
+                color = 'r'
+                alpha = 0.45
+
+            box = shape_df.bbox_verts.loc[val]
+            # low_left_xy   =   (box[3][1], box[3][0])
+            # up_left_xy  =   (box[0][1], box[0][0])
+            # low_rt_xy   =   (box[2][1], box[2][0])
+            # up_rt_xy    =   (box[1][1], box[1][0])
+            if shape_df.cv_bg.loc[val] >= cv_cutoff:
+                line1 = lines.Line2D([box[3][1],box[1][1]],[box[3][0],box[1][0]], **line_settings)
+                line2 = lines.Line2D([box[0][1],box[2][1]],[box[0][0],box[2][0]], **line_settings)
+                axes.add_line(line1)
+                axes.add_line(line2)
+
+            else:
+                pc = shape_df.perc_contrast.loc[val]
+                centroid = shape_df.centroid.loc[val]
+                # round_circ = plt.Circle((centroid[1], centroid[0]),
+                #                          pc*3,
+                #                          color=color, alpha = alpha,
+                #                          **patch_settings
+                # )
+                # axes.add_patch(round_circ)
+                axes.text(y = centroid[0], x = centroid[1], s = str(round(pc,2)),
+                         color = 'red', fontsize = '5', horizontalalignment = 'right')
+
+    if scalebar > 0:
+        scalebar_len_pix = pix_per_um * scalebar
+        scalebar_len = scalebar_len_pix / ncols
+        scalebar_xcoords = ((0.98 - scalebar_len), 0.98)
+        scale_text_xloc = np.mean(scalebar_xcoords) * ncols
+        axes.axhline(y=100, xmin=scalebar_xcoords[0], xmax=scalebar_xcoords[1],
+                    linewidth = 8, color = "red")
+        axes.text(y = 85, x = scale_text_xloc, s = (str(scalebar)+' ' + r'$\mu$' + 'm'),
+                 color = 'red', fontsize = '20', horizontalalignment = 'center')
+        # axes.text(y = 120, x = scalebar_xcoords[0] * ncols, s = im_name,
+        #          color = 'red', fontsize = '10', horizontalalignment = 'left')
+        # axes.text(y = 140, x = scalebar_xcoords[0] * ncols, s = "Radius = {} " + r'$\mu$' + "m".format(true_radius),
+        #              color = 'red', fontsize = '10', horizontalalignment = 'left')
+
+
 #*********************************************************************************************#
 def histogrammer(particle_dict, spot_counter, cont_window, baselined = True):
     """Returns a DataFrame of histogram data from the particle dictionary. If baselined = True, returns a DataFrame where the histogram data has had pass 1 values subtracted for all spots"""
@@ -273,11 +353,12 @@ def histogrammer(particle_dict, spot_counter, cont_window, baselined = True):
     else:
         return baseline_histogram_df
 #*********************************************************************************************#
-def histogram_averager(histogram_df, mAb_dict_rev, pass_counter):
+def histogram_averager(histogram_df, mAb_dict_rev, pass_counter, smooth = False, sm_window = 7):
     """Returns an DataFrame representing the average histogram of all spots of the same type."""
     mean_histo_df = histogram_df[['bins']]
+    # smooth_histo_df = mean_histo_df.copy()
     for key in mAb_dict_rev:
-        mAb_split_df, mean_spot_df = pd.DataFrame(), pd.DataFrame()
+        mAb_split_df, mean_spot_df, smooth_spot_df = pd.DataFrame(), pd.DataFrame(), pd.DataFrame()
         for col in histogram_df:
             if str(col).replace('_','').isdigit():
                 spot_num = int(col.split("_")[0])
@@ -292,73 +373,97 @@ def histogram_averager(histogram_df, mAb_dict_rev, pass_counter):
                 pass_num = int(col.split("_")[1])
                 if pass_num == i:
                     pass_df = pd.concat((pass_df, mAb_split_df[col]), axis = 1)
-                    mean_pass_df = (pass_df.mean(axis = 1)).rename(key +'_'+ str(i))
+            # print(pass_df)
+            new_name = key +'_'+ str(i)
+            mean_pass_df = (pass_df.mean(axis = 1)).rename(new_name)
+                # print(col)
+                    # print(mean_pass_df)
+                    # print(col)
             mean_spot_df = pd.concat((mean_spot_df, mean_pass_df), axis = 1)
+
+            if smooth == True:
+                smooth_pass_df = mean_pass_df.rolling(window = sm_window,
+                                                      center = True).mean().rename('sm-'+new_name)
+                smooth_spot_df = pd.concat((smooth_spot_df, smooth_pass_df), axis = 1)
+                        # def smoothing(mean_pass_df, val = 5):
+                        #     smooth_pass_list = []
+                        #     for x in range(val, len(mean_pass_df) - val-1):
+                        #         print(x)
+                        #         smooth_val = np.mean(mean_pass_df[x-val:x+val+1])
+                        #         smooth_pass_list.append(smooth_val)
+
+                # print(mean_spot_df)
         mean_histo_df = pd.concat((mean_histo_df, mean_spot_df), axis = 1)
+        if smooth == True:
+            mean_histo_df = pd.concat((mean_histo_df, smooth_spot_df), axis = 1)
+
     return mean_histo_df
 #*********************************************************************************************#
-def generate_combo_hist(histogram_df, chip_name, pass_counter, cont_window, cmap):
+def generate_combo_hist(mean_histo_df, chip_name, pass_counter,
+                        cont_window, cmap, baselined = True, savedir = ''):
     """Generates a histogram figure for each pass in the IRIS experiment from a DataFrame representing the average data for every spot type"""
-    histo_dir = ('../virago_output/'+chip_name+'/histograms')
-    cont_str = '{0}-{1}'.format(*cont_window)
 
-    histo_min = int(np.min(np.min(histogram_df.drop('bins', axis = 1))))
-    histo_max = int(np.max(np.max(histogram_df.drop('bins', axis = 1))))
+    cont_str = '{0}-{1}'.format(*cont_window)
+    bin_series = mean_histo_df.pop('bins')
+    smooth_histo_df = mean_histo_df.filter(regex='sm-')
+
+    histo_min = int(np.min(np.min(mean_histo_df)))
+    histo_max = int(np.max(np.max(mean_histo_df)))
     y_minmod = histo_min % 5
     y_maxmod = histo_max % 5
     if y_minmod == 0: y_min = histo_min - 5
     else: y_min = histo_min - y_minmod
     if y_maxmod == 0: y_max = histo_max + 5
     else: y_max = histo_max + y_maxmod
-    if abs(y_max - y_min) < 10:
-        y_grid = 1
-    else:
-        y_grid = int(np.ceil(abs((y_max - y_min) // 10)/5) * 5)
-    # print(y_min,y_max,y_grid)
+    if abs(y_max - y_min) < 10: y_grid = 1
+    else: y_grid = int(np.ceil(abs((y_max - y_min) // 10)/5) * 5)
+
     if pass_counter < 10: passes_to_show = 1
     else: passes_to_show = pass_counter // 10
-    for i in range(1, pass_counter+1, passes_to_show):
+    for i in range(2, pass_counter+1, passes_to_show):
         sns.set(style='darkgrid')
         c = 0
-        for col in histogram_df:
-            if not col == 'bins':
-                spot_type = col.split("_")[0]
-                pass_num = int(col.split("_")[-1])
-                if pass_num == i:
-                    peak = histogram_df.bins[histogram_df[col] == np.max(histogram_df[col])]
-                    peak = float(peak.iloc[0])
-                alpha_val = 0.75
-                if pass_num == i:
-                    plt.step(x = histogram_df.bins,
-                             y = histogram_df[col],
-                             linewidth = 1,
-                             color = cmap[c],
-                             alpha = alpha_val,
-                             label = spot_type)
-                    plt.axvline(x=peak, color = cmap[c], alpha=0.75, linewidth = 0.5)
-                    c += 1
-        plt.title(chip_name+" Pass "+str(i)+" Average Histograms - Baseline Subtracted")
+        for col in smooth_histo_df:
+            spot_type = col.split("_")[0]
+            pass_num = int(col.split("_")[-1])
+
+            if pass_num == i:
+
+                plt.plot(bin_series,
+                         smooth_histo_df[col],
+                         linewidth = 2,
+                         color = cmap[c],
+                         alpha = 0.75,
+                         label = spot_type)
+
+
+                c += 1
+            # plt.clf()
+        if baselined == True:
+            plt.title(chip_name+" Pass "+str(i)+" Average Histograms - Baseline Subtracted")
+        else:
+            plt.title(chip_name+" Pass "+str(i)+" Average Histograms")
         plt.axhline(y=0, ls='dotted', c='black', alpha=0.75)
         plt.legend(loc = 'best', fontsize = 14)
         plt.ylabel("Particle Count", size = 14)
 
         plt.yticks(range(y_min,y_max+5,y_grid), size = 12)
         plt.xlabel("Percent Contrast", size = 14)
-        if (len(histogram_df.bins) >= 100) & (len(histogram_df.bins) < 200): x_grid = 10
-        elif len(histogram_df.bins) >= 200: x_grid = 20
+        if (len(bin_series) >= 100) & (len(bin_series) < 200): x_grid = 10
+        elif len(bin_series) >= 200: x_grid = 20
         else: x_grid = 5
-        plt.xticks(histogram_df.bins[::x_grid], size = 12, rotation = 30)
+        plt.xticks(bin_series[::x_grid], size = 12, rotation = 30)
 
-        fig_name = (chip_name+'_combohisto_pass_'+str(i)+'_contrast_'+cont_str+'.png')
-        plt.savefig(histo_dir + '/' + fig_name, bbox_inches = 'tight', dpi = 150)
-        print("File generated: " + fig_name)
+        figname = ('{}_combohisto_pass_{}_contrast_{}.png'.format(chip_name,i,cont_str))
+        plt.savefig('{}/{}'.format(savedir,figname), bbox_inches = 'tight', dpi = 150)
+        print("File generated: {}".format(figname))
         plt.clf()
 #*********************************************************************************************#
 def average_spot_data(spot_df, spot_tuple, pass_counter):
     """Creates a dataframe containing the average data for each antibody spot type"""
     averaged_df = pd.DataFrame()
     for i, spot in enumerate(spot_tuple):
-        sub_df = spot_df[spot_df.spot_type == spot_tuple[i]]
+        sub_df = spot_df[(spot_df.spot_type == spot_tuple[i]) & (spot_df.valid == True)]
         avg_time, avg_kpd, avg_nd, std_kpd, std_nd = [],[],[],[],[]
         for i in range(1,pass_counter+1):
             subsub_df = sub_df[sub_df.scan_number == i]
@@ -396,10 +501,10 @@ def dict_joy_trans(particle_dict, spot_counter):
 
     return big_df
 #*********************************************************************************************#
-def generate_joyplot(joy_df, spot_counter, cont_window, chip_name, savedir):
+def generate_joyplot(joy_df, spot_counter, cont_window, chip_name, savedir =''):
     """Generates a joyplot-style histogram showing how the peak changes for each scan of a spot"""
     scans = sorted(list(set(joy_df.scan_ID)), reverse = True)
-    histo_dir = ('../virago_output/'+chip_name+'/histograms')
+
     num_graphs = len(scans)
     if num_graphs > 10:
         scans_to_show = range(1,num_graphs, num_graphs//10)
@@ -436,22 +541,21 @@ def generate_joyplot(joy_df, spot_counter, cont_window, chip_name, savedir):
     g.despine(bottom=True, left=True)
 
 
-    fig_name = (chip_name+'_series-histogram_spot-'+str(spot_counter)+'.png')
-    g.savefig(histo_dir + '/' + fig_name, bbox_inches = 'tight', dpi = 150)
-    print("File generated: " + fig_name)
+    figname = (chip_name+'_series-histogram_spot-'+str(spot_counter)+'.png')
+    g.savefig('{}/{}'.format(savedir,figname), bbox_inches = 'tight', dpi = 150)
+    print("File generated: {}".format(figname))
 #*********************************************************************************************#
 def generate_timeseries(spot_df, averaged_df, mAb_dict, spot_tuple,
-                         chip_name, sample_name, vhf_colormap, cont_window,
-                         scan_or_time = 'scan'):
+                         chip_name, sample_name, vhf_colormap, cont_window, version,
+                         scan_or_time = 'scan', baseline = True, savedir=''):
     """Generates a timeseries for the cumulate particle counts for each spot, and plots the average
     for each spot type"""
-    baseline_toggle = input("Do you want the time series chart normalized to baseline? ([y]/n)\t")
-    assert isinstance(baseline_toggle, str)
-    if baseline_toggle.lower() in ('no', 'n'):
-        filt_toggle = 'kparticle_density'
-    else:
-        filt_toggle = 'normalized_density'
-        print("Normalizing...")
+    # baseline_toggle = input("Do you want the time series chart normalized to baseline? ([y]/n)\t")
+    # assert isinstance(baseline_toggle, str)
+    # if baseline_toggle.lower() in ('no', 'n'):
+
+    if baseline == True: filt_toggle = 'normalized_density'
+    else: filt_toggle = 'kparticle_density'
 
     sns.set(style="ticks")
     fig = plt.figure(figsize = (8,6))
@@ -462,7 +566,7 @@ def generate_timeseries(spot_df, averaged_df, mAb_dict, spot_tuple,
         elif (mAb_dict[key-1] != mAb_dict[key]): c += 1
 
         solo_spot_df = spot_df[(spot_df.spot_number == key)
-                                & (spot_df.valid == 'True')].reset_index(drop = True)
+                                & (spot_df.valid == True)].reset_index(drop = True)
         if not solo_spot_df.empty:
             if scan_or_time == 'scan':
                 x_axis = solo_spot_df['scan_number']
@@ -495,17 +599,17 @@ def generate_timeseries(spot_df, averaged_df, mAb_dict, spot_tuple,
     cont_str = '{0}-{1}'.format(*cont_window)
     plt.ylabel("Particle Density (kparticles/sq. mm)\n {} % Contrast".format(cont_str), size = 12)
     plt.yticks(color = 'k', size = 12)
-    plt.title("{} Time Series of {}".format(chip_name, sample_name), size = 14)
+    plt.title("{} Time Series of {} - v{}".format(chip_name, sample_name, version), size = 14)
     plt.axhline(linestyle = '--', color = 'gray')
 
-    plot_name = "{}_timeseries_{}.png".format(chip_name, cont_str)
+    plot_name = "{}_timeseries.{}contrast.v{}.png".format(chip_name, cont_str,version)
 
-    plt.savefig('../virago_output/{}/{}'.format(chip_name, plot_name),
+    plt.savefig('{}/{}'.format(savedir, plot_name),
                 bbox_inches = 'tight', pad_inches = 0.1, dpi = 300)
     print('File generated: {}'.format(plot_name))
     plt.clf(); plt.close('all')
 #*********************************************************************************************#
-def generate_barplot(spot_df, pass_counter, cont_window, chip_name, sample_name):
+def generate_barplot(spot_df, pass_counter, cont_window, chip_name, sample_name, version, savedir=''):
     """
     Generates a barplot for the dataset.
     Most useful for before and after scans (pass_counter == 2)
@@ -518,24 +622,24 @@ def generate_barplot(spot_df, pass_counter, cont_window, chip_name, sample_name)
     sns.set(style = 'darkgrid', font_scale = 0.75)
 
     sns.barplot(y='kparticle_density',x='spot_type',hue='scan_number',data=firstlast_spot_df,
-                 errwidth = 2, ax=ax1)
+                 errwidth = 2, ci = 'sd', ax=ax1)
     ax1.set_ylabel("Particle Density (kparticles/sq.mm)\n"+"Contrast = "+cont_str+ '%', fontsize = 10)
     ax1.set_xlabel("Prescan & Postscan", fontsize = 8)
 
-    sns.barplot(y='normalized_density',x='spot_type',data=final_spot_df,
-                color ='purple',errwidth = 2, ax=ax2)
+    sns.barplot(y='normalized_density',x='spot_type',data=final_spot_df, color ='purple',
+              errwidth = 2, ci = 'sd', ax=ax2)
     ax2.set_ylabel("")
     ax2.set_xlabel("Difference", fontsize = 8)
     for ax in fig.axes:
         plt.sca(ax)
         plt.xticks(rotation=30, fontsize = 6)
 
-    plt.suptitle(chip_name+" "+sample_name, y = 1.04, fontsize = 14)
+    plt.suptitle("{} {} - v{}".format(chip_name,sample_name,version), y = 1.04, fontsize = 14)
 
     plt.tight_layout()
-    plot_name = "{}_barplot_{}.png".format(chip_name, cont_str)
+    plot_name = "{}_barplot.{}contrast.v{}.png".format(chip_name, cont_str, version)
 
-    plt.savefig('../virago_output/{}/{}'.format(chip_name, plot_name),
+    plt.savefig('{}/{}'.format(savedir,plot_name),
                 bbox_inches = 'tight', pad_inches = 0.1, dpi = 300)
     print('File generated: {}'.format(plot_name))
     plt.clf(); plt.close('all')
